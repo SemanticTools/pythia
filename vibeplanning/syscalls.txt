@@ -1,0 +1,83 @@
+We like to give LLM posibility to register new quick memory and event in the main ask dialog, by detecting it from user input, and allow it to run these commands
+
+@add-quick-memory("the memory")
+@add-event("the-event","the year and date")
+@add-recurring-event("the-event","the date")
+
+It would use the swedish date syntax "YYYYMMDD",  and for recurring events "MMDD", "tuesdays", "1st of every month"
+
+example:
+
+User: 
+My birthday is the 5th of december
+
+LLM:
+Added event to calendar.
+@add-recurring-event("Birthday","1205")
+
+GUI:
+Added event to calendar
+
+We can use ai-toolbox for this functionality using atfunc
+
+----------questions / comments below ------------
+
+CLAUDE NOTES — 2026-02-20
+--------------------------
+
+This is a solid pattern. A few thoughts and questions:
+
+1. PARSING APPROACH
+   The LLM response text gets scanned for @command(...) calls after the
+   normal answer is assembled. The GUI strips them before rendering,
+   executes them silently, and shows a small confirmation badge instead.
+   This keeps the chat clean.
+
+2. atfunc / ai-toolbox
+   Haven't seen this in the codebase yet. Is @semantictools/llamiga the
+   same package, or is ai-toolbox a separate dependency? Worth checking
+   before designing the integration — if llamiga already supports
+   structured tool-call responses we can use that instead of regex
+   parsing the raw text.
+
+>>use import * as toolMan from '@semantictools/ai-toolbox';
+
+3. @add-event vs @add-recurring-event
+   The distinction is clear. For storage:
+   - @add-event         → goes to -events.txt as a dated snippet (%%YYYYMMDD...)
+   - @add-recurring-event → goes to -events.txt with MMDD / weekday / "1st"
+     as the snippet name, so it shows up in searches year-round
+   - @add-quick-memory  → goes to -quickmem.txt as a named snippet
+
+4. DATE FIELD IN @add-event
+   The example has two args: the event text and a separate date string.
+   This means the LLM picks the date, not the server clock.
+   That is intentional and correct — the user said "my birthday is Dec 5"
+   so the LLM should use 1205, not today's date.
+   Contrast with the current quickLabel('event') which uses server's
+   new Date() — that will need to stay for events detected in real-time
+   ("just had a meeting"), while @add-event handles past/future dates.
+
+5. SNIPPET NAMING
+   For @add-event("bought a car","20260315") the snippet name would be
+   "20260315BoughtACar" — same convention as today's auto-labels.
+   For @add-recurring-event("Birthday","1205") → snippet name "1205Birthday".
+
+6. OPEN QUESTION — do we need a new server endpoint?
+   Option A: reuse POST /memory/event but add an optional `date` field
+             so the server uses that instead of new Date().
+   Option B: new POST /memory/syscall endpoint that dispatches all three
+             command types in one place.
+   Option B is cleaner as the set of commands grows.
+
+>>Actually ai-toolbox, works on the server, taking llm output as input.
+
+7. OPEN QUESTION — should the LLM confirm before saving?
+   The example shows the LLM saying "Added event to calendar." then the
+   command. This is implicit auto-save. Should the GUI show a small
+   dismissible toast ("Event saved — undo?") or is silent fine?
+
+>>Silent is fine for now
+
+Ready to implement when you say go. Suggest starting with the parser +
+the new /memory/syscall endpoint, then wiring up the GUI response handler.

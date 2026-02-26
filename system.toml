@@ -1,0 +1,45 @@
+[server]
+port = 3000
+host = "127.0.0.1"
+
+[llm]
+provider = "grok"
+#provider = "anthropic"
+#model = "claude-sonnet-4-20250514"
+mode = "hybrid"
+
+[embeddings]
+model = "Xenova/bge-base-en-v1.5"
+dims = 768
+
+[vectors]
+url = "http://localhost:6333"
+collection = "pythia"
+
+[storage]
+path = "./data/tmp/doc-ingest"
+
+[chunker]
+max_chars = 1000
+
+[ingest]
+docsource_dir = "./docsource"
+index_path    = "./data/ingest-index.json"
+extensions    = ["txt", "md", "js", "mjs", "java"]
+
+[operational]
+mode = "personal"
+
+[personal]
+username        = "superuser@local"
+theme           = "dark"
+snippet_marker  = "%%"
+disabled_prefix = "_d_"
+banner          = "PYTHIA"
+logo            = "logo-large-personal.png"
+logos           = { dark = "logo-large-personal-dark.png", light = "logo-large-personal-light.png", terminal = "logo-large-personal-darkgreen.png" }
+smart_buttons   = [
+  "Add Quick Memory::remember that ",
+  "Add Event::create me an event for ",
+  "Add Bug::remember me a coding-bug( and add a unique id for it): "
+]

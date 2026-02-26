@@ -1,0 +1,141 @@
+Q: What should we use for generating embeddings — a local model or an external API?
+
+Options:
+  A) Local model via @xenova/transformers (runs ONNX models in Node.js, no network, no cost, privacy-safe)
+     - Model: nomic-embed-text-v1.5 (768 dims, strong quality, MIT licensed)
+     - Downside: first run downloads ~270MB model; slightly slower than GPU API
+  B) OpenAI text-embedding-3-small (1536 dims, fast, costs ~$0.02/1M tokens)
+     - Downside: network dependency, cost, sends your data out
+  C) Pluggable: config selects provider (local or api), same interface either way
+
+Proposal: Go with (C) — pluggable embedder module. Default = local nomic-embed-text-v1.5 so the
+system works fully offline with zero cost. API provider selectable in system.toml for users who
+prefer it. This keeps the module boundary clean: embedder.mjs exports one function embed(text).
+
+-----------end of llm questions/answers-------------
+
+USER# Start Local, localize it in single file for later extention
+
+Q: Which LLM should we call for answering questions?
+
+Options:
+  A) Claude API (Anthropic) — high quality, context window up to 200k tokens
+  B) Ollama (local) — free, private, no network needed, many models available
+  C) OpenAI API — widely used, good tooling
+  D) Pluggable: config selects provider
+
+Proposal: Pluggable LLM module (llm.mjs), same interface: ask(prompt, context). Default = Claude API
+since it has the largest context window (very useful when injecting many retrieved pages). Ollama
+as local option for airgapped use. Both configured in system.toml (provider, model, api_key, base_url).
+
+USER# Use LLaMiga, see refdoc/llamiga-readme.md, make model configurably. There is a .env file to configure llamiga tokens. Start with using Claude
+
+-----------end of llm questions/answers-------------
+
+Q: Where should we store vectors (embeddings)?
+
+Options:
+  A) SQLite with cosine similarity in JS — zero extra services, single file DB, ~40 lines of code
+     - Downside: full table scan for similarity search; slow beyond ~100k vectors
+  B) Qdrant — dedicated vector DB, excellent Node.js client, supports clustering for multi-node
+     - Downside: extra service to run (Docker), adds a dependency
+  C) LanceDB — embedded vector DB for Node.js, no extra service
+     - Smaller community, less mature than Qdrant
+
+Proposal: Two-tier approach configured in system.toml:
+  - Single-node default: SQLite (store embedding as JSON blob, cosine sim in JS). Fast enough for
+    hundreds of thousands of short chunks. We implement this ourselves in <50 lines.
+  - Multi-node: Qdrant. Same interface exposed by vectors.mjs, different backend.
+This avoids forcing an extra service on small deployments.
+
+USER# B, if its open source and free, we have access to docker
+
+-----------end of llm questions/answers-------------
+
+Q: Where should we store the actual document text and metadata?
+
+Options:
+  A) SQLite — reliable, query-able, same file as vectors, zero extra deps (built into Node via better-sqlite3)
+  B) Plain files on disk — simplest, but harder to query and coordinate across nodes
+  C) PostgreSQL — overkill for single node, but natural fit for multi-node
+
+Proposal: SQLite via better-sqlite3 for single node. It handles both document text and metadata
+(filename, chunk index, word count, ingest date). Schema:
+  documents(id, source, text, chunk_index, ingested_at)
+  embeddings(doc_id, vector_json)
+For multi-node, documents move to shared storage (NFS or S3-compatible MinIO); SQLite is replaced
+by PostgreSQL or a shared SQLite on NFS. Keep the storage.mjs interface identical.
+
+USER# B, but make storage layer, so we can easily swap later
+
+-----------end of llm questions/answers-------------
+
+Q: What should we use for the web server?
+
+Options:
+  A) Node.js built-in `http` module — zero deps, enough for our needs
+  B) Fastify — fast, low overhead, good ecosystem
+  C) Express — ubiquitous but heavier
+
+Proposal: Built-in http module (server.mjs). Route parsing is a few lines of code. We don't need
+middleware stacks. If complexity grows, Fastify is the upgrade path — but start minimal.
+
+USER# A
+
+-----------end of llm questions/answers-------------
+
+Q: How do we parse system.toml with no/minimal dependencies?
+
+Options:
+  A) Write our own TOML parser — risky, TOML has many edge cases (dates, multi-line strings, arrays)
+  B) @iarna/toml — small (no sub-deps), full TOML 1.0 compliant, MIT licensed
+  C) smol-toml — even smaller (~5KB), fast, TOML 1.0
+
+Proposal: Use smol-toml. It has no dependencies, is very small, and handles full TOML 1.0. This is
+the one external dependency that is worth it because correct TOML parsing is genuinely hard to
+implement bug-free in <50 lines. Load once at startup in config.mjs.
+
+USER# Yes, option B
+
+-----------end of llm questions/answers-------------
+
+Q: How should documents be chunked before embedding?
+
+Options:
+  A) Fixed-size character chunks (e.g. 512 chars) with overlap (e.g. 50 chars)
+  B) Sentence-aware: split on sentence boundaries, then group into ~512-token chunks
+  C) Paragraph-aware: split on blank lines, then merge small ones
+
+Proposal: Paragraph-aware chunking (C) as default — it preserves natural meaning units and is
+simple to implement in <30 lines. Chunk size and overlap are configurable in system.toml. Sentence
+splitting is complex without a dependency; paragraph splitting works well for typical knowledge-base
+text (docs, wikis, manuals). Add sentence mode later if needed.
+
+USER# Yes, option C
+
+-----------end of llm questions/answers-------------
+
+Q: How should we scale to multiple nodes?
+
+Single-node architecture:
+  [HTTP server] → [retriever] → [SQLite vectors + docs] → [LLM API]
+
+Multi-node concerns:
+  1. Document storage must be shared → NFS mount or MinIO (S3-compatible, self-hosted)
+  2. Vector index must be shared → Qdrant cluster (has built-in replication + sharding)
+  3. LLM calls are stateless → each node calls the API independently, no coordination needed
+  4. Ingest workers can be parallel → multiple nodes ingest different files, write to shared Qdrant
+  5. Query nodes → stateless, read from shared Qdrant + doc store, load-balance with nginx
+
+Proposal for multi-node path:
+  - Keep all I/O behind module interfaces (storage.mjs, vectors.mjs) switchable via system.toml
+  - system.toml: storage.backend = "sqlite" | "postgres" | "s3"
+                 vectors.backend = "sqlite" | "qdrant"
+  - Nodes are identical; role (ingest / query / both) set in config
+  - No central coordinator needed; Qdrant handles vector consistency
+
+This means the codebase itself does not change when scaling — only config does.
+
+USER# Yes, multi-node path
+
+-----------end of llm questions/answers-------------

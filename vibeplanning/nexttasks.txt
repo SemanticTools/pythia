@@ -1,0 +1,56 @@
+next tasks
+----------
+
+1. ✓ DONE — memory management rationalized. Memory Files tab removed from Memories panel.
+   Buckets tab is the single home for file management.
+
+2. ✓ DONE — discussion saving implemented. Auto-save ring-buffer of 5 recents + pinned.
+   ≡ button top-left opens panel. Load resumes live. Pinned copy updates in place.
+
+---------- argue / question / comments below----------
+
+CLAUDE — 2026-02-21
+-------------------
+
+TASK 1 — Rationalize memory management
+---------------------------------------
+Currently duplicated:
+  - Buckets tab: full file management (upload, rename, disable, enable, delete)
+  - Memories panel > Memory Files tab: upload only + read-only list
+
+Proposal:
+  Remove the "Memory Files" tab from the Memories panel entirely.
+  The Buckets tab is already the correct home for file management — it has
+  all the controls. The Memories panel should stay focused on quick in-chat
+  memory (Quick Memories + Events).
+
+  If the concern is discoverability ("how do I add a file from the discussion
+  view?"), a simple "→ Buckets" link or a smart button ("Upload file") that
+  switches to the Buckets tab would cover it without duplicating UI.
+
+  DECIDED:
+  - Keep "Buckets" name as-is.
+  - Remove Memory Files tab from Memories panel. Buckets is the single home.
+  - No link/button needed — tabs are right there.
+
+TASK 2 — Save discussions
+--------------------------
+Solid feature. A few clarifications before implementing:
+
+  Storage: each discussion = { id, title, timestamp, messages[] }.
+  Saved to a JSON file on disk (e.g. data/discussions.json), or one file per
+  discussion (data/discussions/<id>.json). Separate file per discussion is
+  cleaner for pinning/pruning.
+
+  DECIDED:
+  - Auto-save implicitly after each exchange. Ring-buffer of 5 recents, no user action needed.
+  - Loading a discussion resumes it live (history replayed into LLM session).
+    A "Load" button appears next to each discussion name in the list.
+  - Title: truncated first user message.
+  - Pinned: never auto-pruned, stored separately from the ring-buffer.
+  - Start button: top-left of header area, opens discussion list overlay/panel.
+
+  DECIDED:
+  - Storage: one JSON file per discussion under data/discussions/<id>.json
+  - New discussion: clearing chat starts a fresh one; previous auto-saves as a recent.
+  - Loading a pinned discussion and continuing: pinned copy updates in place.

@@ -1,0 +1,15 @@
+backup/
+attic/
+refdoc/
+node_modules/
+*.env
+.env
+.DS_Store
+data/
+log/
+*.log
+docsource/
+example-data/
+.claude/
+./log
+*.pid

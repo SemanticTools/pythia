@@ -1,0 +1,37 @@
+This is a technical project about making a knowledge base available / editable with LLM assistence
+
+Code: nodejs
+Type of coding: mjs files, modules, not classes
+Very low on dependencies.  If we can do ourselves in <50 lines, we do that instead.
+Nothing is hardcoded. We have our system.toml file to write all our settings.
+
+Split functionalities clean, files should solve one problem only (ie, logging, storage, webserver, etc.... )
+
+##The system to build.
+
+We want to be able to upload very many text pages, and index them by words.
+Indexes converted to embeddings.
+Then we want to be able to ask questions about it.
+Prompt is converted to embeddings.
+Embeddings used to search close by embeddings. top x pages will be preloaded into the prompt.
+The question will then be posted to LLM.
+
+
+##Questions and answers about this project
+
+All questions shall be added to a file called questions.txt, and delimited with a line like this
+-----------end of llm questions/answers-------------
+
+Before building, add some questions for what technologies to use, propose. Think about scaling to multiple nodes as well.
+
+
+##Special instructions
+We will use backups, not git. At least the user will use git manually, you will use backups.
+
+When user ask to make backup, you will copy everything (excluding backups themselves) to backup folder like this ./backup/currentdate_and_time_plus_comment_3_words_to_describe_state
+You will make a script for doing this, same for restore.
+Before restore, always make a backup first, with comment before_restore.
+
+We will have folders like backup, attic and refdoc, please add them to .gitignore souser wont accidentally check them in.
+
+

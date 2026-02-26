@@ -1,0 +1,14 @@
+USER# Move all prompts out of code, into prompting.toml
+
+USER# there will be default prompts and specific override prompts for models.
+
+USER# example (default)
+USER#systemPrompt = """
+USER# You are an autonomous agent. You are given a single task to complete.........
+USER#
+
+USER# example (claude-sonet)
+USER#systemPrompt_PROVIDER+MODELNAMEHERE = """
+USER# Remember always: You are an autonomous agent. You are given a single task to complete.........
+USER#
+

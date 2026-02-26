@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pythia</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="/favicon.png">
+</head>
+<body>
+
+  <header>
+    <div class="header-left">
+      <button id="disc-btn" title="Discussions">≡</button>
+      <span id="banner">ΠPYTHIA</span>
+    </div>
+    <div class="header-actions">
+      <button id="theme-btn" title="Cycle theme (Ctrl+T)">◐</button>
+      <button id="help-btn" title="Keyboard shortcuts (?)">?</button>
+    </div>
+  </header>
+
+  <nav>
+    <button class="tab-btn active" data-tab="discussion" accesskey="1">Discussion</button>
+    <button class="tab-btn" data-tab="buckets" accesskey="2">Buckets</button>
+  </nav>
+
+  <!-- Tab: Discussion -->
+  <section id="tab-discussion" class="tab-panel active">
+    <div id="chat"></div>
+
+    <div id="ask-area">
+      <img id="logo" src="" alt="" aria-hidden="true">
+      <form id="ask-form">
+        <div id="smart-buttons"></div>
+        <textarea id="question" placeholder="Ask a question… (Enter to send, Ctrl+Enter for new line)" rows="2"></textarea>
+        <div class="form-actions">
+          <button type="button" id="clear-btn">Clear</button>
+          <button type="submit" id="ask-btn">Ask</button>
+        </div>
+      </form>
+      <div id="ask-error" class="error" hidden></div>
+
+    <details id="memories-panel">
+      <summary>Memories</summary>
+      <div class="memory-body">
+
+        <nav class="mem-tabs">
+          <button class="mem-tab-btn active" data-memtab="quick">Quick Memories</button>
+          <button class="mem-tab-btn" data-memtab="events">Events</button>
+        </nav>
+
+        <!-- Tab: Quick Memories -->
+        <div id="mem-tab-quick" class="mem-tab-panel">
+          <div class="snippet-controls">
+            <button type="button" id="snippets-refresh-quick" class="mem-refresh-btn">↺ Refresh</button>
+          </div>
+          <div id="snippet-list-quick"></div>
+        </div>
+
+        <!-- Tab: Events -->
+        <div id="mem-tab-events" class="mem-tab-panel" hidden>
+          <div class="snippet-controls">
+            <button type="button" id="snippets-refresh-events" class="mem-refresh-btn">↺ Refresh</button>
+          </div>
+          <div id="snippet-list-events"></div>
+        </div>
+
+
+      </div>
+    </details>
+    </div><!-- #ask-area -->
+  </section>
+
+  <!-- Tab: Buckets -->
+  <section id="tab-buckets" class="tab-panel" hidden>
+    <div class="bucket-toolbar">
+      <input id="file-input" type="file" accept=".txt,.pdf" hidden>
+      <button type="button" id="upload-file-btn">Upload File</button>
+      <span id="upload-status" class="upload-status" hidden></span>
+    </div>
+    <div id="upload-error" class="error" hidden></div>
+
+    <div id="bucket-list"></div>
+  </section>
+
+  <!-- Discussions overlay -->
+  <div id="disc-overlay" hidden>
+    <div id="disc-box">
+      <div class="disc-header">
+        <span class="disc-header-title">Discussions</span>
+        <button type="button" id="disc-new-btn">+ New</button>
+        <button type="button" id="disc-close-btn">✕</button>
+      </div>
+      <div id="disc-list"></div>
+    </div>
+  </div>
+
+  <!-- Snippet edit modal -->
+  <div id="snippet-modal" hidden>
+    <div id="snippet-modal-box">
+      <div class="snippet-modal-header">
+        <span class="snippet-modal-label-tag">snippet</span>
+        <span id="snippet-modal-name"></span>
+      </div>
+      <textarea id="snippet-modal-text" rows="14"></textarea>
+      <div class="snippet-modal-footer">
+        <button type="button" id="snippet-modal-cancel">Cancel</button>
+        <button type="button" id="snippet-modal-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Help overlay -->
+  <div id="help-overlay" hidden>
+    <div id="help-box">
+      <h2>Keyboard Shortcuts</h2>
+      <table>
+        <tr><td>Ctrl+1</td><td>Discussion tab</td></tr>
+        <tr><td>Ctrl+2</td><td>Buckets tab</td></tr>
+        <tr><td>Ctrl+K</td><td>Clear chat</td></tr>
+        <tr><td>Ctrl+M</td><td>Toggle Quick Memory</td></tr>
+        <tr><td>Ctrl+T</td><td>Cycle theme</td></tr>
+        <tr><td>Enter</td><td>Submit question</td></tr>
+        <tr><td>Ctrl+Enter</td><td>New line in question</td></tr>
+        <tr><td>?</td><td>This help</td></tr>
+      </table>
+      <button id="help-close-btn">Close</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

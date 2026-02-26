@@ -1,0 +1,68 @@
+Temporal Awareness — Implementation Plan
+========================================
+
+Goal
+----
+Every LLM call knows the current date and time. This info must NOT
+appear in the conversation history, so it doesn't burn tokens on
+follow-up turns.
+
+Why system prompt, not history
+-------------------------------
+- history[] is replayed verbatim on every /ask call
+- Adding a "current date" user message would compound on every turn
+- The system prompt is reconstructed fresh on every call — it is the
+  right place for volatile, per-request context like timestamps
+- System prompt tokens are not accumulated across turns
+
+Approach
+--------
+Add a {{NOW}} variable to prompting.toml system prompts.
+Pass the current datetime string when building the system prompt in llm.mjs.
+getSystemPrompt() already supports arbitrary vars — just add NOW to the map.
+
+Files to change
+---------------
+
+1. prompting.toml
+   - Add {{NOW}} to both [default] and [hybrid] system prompts.
+   - Suggested placement: one line above the CONTEXT block.
+   - Example line to insert:
+       Current date and time: {{NOW}}
+
+2. src/llm.mjs  — function ask()
+   - Build the NOW string before calling getSystemPrompt():
+       const now = new Date().toLocaleString('en-GB', { timeZone: 'UTC', hour12: false });
+   - Pass it as a variable:
+       getSystemPrompt(provider, model, mode, { CONTEXT: context, NOW: now })
+   - No other changes needed. History replay is untouched.
+
+3. src/llm.mjs  — function quickLabel()  (optional but consistent)
+   - quickLabel uses a hardcoded system message, not getSystemPrompt()
+   - For event labeling it already injects today's date manually
+   - No change strictly required, but could be unified later
+
+Format of NOW
+-------------
+Readable, unambiguous, locale-neutral:
+  "Friday, 20 February 2026, 21:00 UTC"
+Use: new Date().toUTCString()  — already in that form, e.g.
+  "Fri, 20 Feb 2026 21:00:00 GMT"
+Or: new Date().toISOString()   — machine-friendly
+  "2026-02-20T21:00:00.000Z"
+
+Recommendation: toUTCString() — the LLM reads it naturally, no
+ambiguity about timezone.
+
+Token impact
+------------
+- System prompt grows by ~1 line per call. Negligible.
+- history[] stays clean. Zero accumulation across turns.
+- quickLabel calls are unaffected.
+
+Implementation order
+--------------------
+1. src/llm.mjs   — add NOW to getSystemPrompt() call in ask()
+2. prompting.toml — add {{NOW}} line to both [default] and [hybrid]
+3. Restart server, test with "what day is it?" → should answer correctly
+4. Test multi-turn: ask follow-up, verify no date repetition in history

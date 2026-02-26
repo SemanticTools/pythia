@@ -1,0 +1,293 @@
+ADVANCED QUERY PROBLEMS & IDEAS
+================================
+Context: query "tell me about pythia source code" returned nothing from pythia-src subfolder.
+
+────────────────────────────────────────────────────────────────
+WHAT WORKS
+────────────────────────────────────────────────────────────────
+
++ Natural language docs in subfolders (txt, md) — semantic search
+  matches well against NL queries, source::snippet tag appears in answer.
+
++ Specific technical questions about code — e.g. "what does the chunker do?"
+  has a fair chance of hitting a code chunk because the query is specific
+  enough to semantically overlap with the code content.
+
++ Source/snippet tags ARE stored in Qdrant and returned in the /ask
+  response (shown as sources=[pythia-src::chunker.mjs ...]).
+
++ Change detection per-file — modifying one file in a subfolder only
+  re-ingests that file's vectors, not the whole folder.
+
+
+────────────────────────────────────────────────────────────────
+WHAT DOES NOT WORK
+────────────────────────────────────────────────────────────────
+
+1. BROAD / OVERVIEW QUERIES AGAINST CODE
+   "tell me about pythia source code" — the embedding of this NL sentence
+   doesn't align well with embeddings of raw JavaScript code. bge-base-en-v1.5
+   is trained for natural language; code tokens (import, export, async, {, })
+   barely carry semantic meaning for it.
+
+2. topK=5 IS TOO LOW FOR BROAD QUESTIONS
+   Only 5 chunks are retrieved globally. For "pythia source code" the top-5
+   results are almost certainly dominated by the natural language txt files
+   that score higher. The code chunks never surface.
+
+3. SOURCE/SNIPPET METADATA NOT GIVEN TO THE LLM
+   server.mjs line 158: results.map(r => r.text) — only the raw chunk text
+   is passed to the LLM. The LLM has no idea a chunk came from
+   pythia-src::chunker.mjs. Even if a code chunk is retrieved, the LLM
+   can't say "this is from pythia-src".
+
+4. NO WAY TO QUERY BY SOURCE / FOLDER DIRECTLY
+   There is no syntax like "from:pythia-src how does ingest work?".
+   Every query is a pure vector similarity search over the entire collection.
+
+5. VERY SHORT CODE FILES PRODUCE VERY FEW CHUNKS
+   config.mjs (202 chars) produces 1 chunk. That chunk competes against
+   thousands of others. Its probability of appearing in top-5 is near zero
+   for any non-specific query.
+
+
+────────────────────────────────────────────────────────────────
+POTENTIAL SOLUTIONS
+────────────────────────────────────────────────────────────────
+
+A. INCLUDE FILE PATH IN CHUNK TEXT BEFORE EMBEDDING  [easy, high impact]
+   Prepend "File: chunker.mjs | Source: pythia-src\n" to each code chunk
+   before embedding it. Now the vector encodes the filename, so queries like
+   "pythia source code chunker" semantically hit it. No retrieval changes.
+   Also helps the LLM: it sees the file path in context.
+
+B. PASS SOURCE::SNIPPET TO THE LLM IN CONTEXT  [easy, high impact]
+   Change server.mjs line 158 from:
+       results.map(r => r.text)
+   to:
+       results.map(r => r.source && r.snippet
+           ? `[${r.source}::${r.snippet}]\n${r.text}`
+           : r.text)
+   The LLM now knows which file each chunk came from and can answer
+   "this code is in pythia-src/chunker.mjs".
+
+C. SOURCE-FILTERED RETRIEVAL  [medium effort]
+   Parse a "from:sourcename" prefix from the user query.
+   "from:pythia-src how does chunking work?" → Qdrant filter on
+   source="pythia-src" + semantic search within that subset.
+   Qdrant supports payload pre-filters natively.
+
+D. INCREASE topK (CONFIGURABLE)  [trivial]
+   Raise topK from 5 to 10 or 15. Broader queries get more candidates,
+   code chunks have a better chance of surfacing. Downside: larger LLM
+   context, higher latency. Make it configurable in system.toml.
+
+E. FOLDER INDEX FILE  [easy, no code change needed]
+   Add a README.md or _index.txt inside each subfolder that describes
+   its contents in plain English. It gets ingested as snippet="README.md"
+   and becomes the natural-language "entry point" for the folder.
+   Query "tell me about pythia source code" would hit this index file.
+
+F. AUTO-GENERATED FOLDER SUMMARY  [medium effort]
+   During ingest of a subfolder, automatically generate a plain-English
+   summary chunk that lists all file names and a one-line description of
+   each (derived from the first meaningful line / export list). Store it
+   as snippet="_summary" with source=foldername. Acts like option E but
+   automatic.
+
+────────────────────────────────────────────────────────────────
+RECOMMENDED QUICK WINS (no architecture change)
+────────────────────────────────────────────────────────────────
+  1. B — pass source::snippet to LLM context     (5-line change, server.mjs)
+  2. A — prepend file path to chunk before embed  (1-line change, ingest.mjs)
+  3. D — make topK configurable in system.toml    (trivial)
+  4. E — add a README.md per subfolder            (no code, immediate effect)
+
+
+---------------------------------- more questions -----------------------
+
+What if the LLM does not get the right context, how can the llm detect this, and
+ask for right context?
+
+ANSWER:
+────────────────────────────────────────────────────────────────
+DETECTING & RECOVERING FROM INSUFFICIENT CONTEXT
+────────────────────────────────────────────────────────────────
+
+The core problem: the system retrieves 5 chunks, passes them blind to the
+LLM, and hopes they're the right ones. The LLM has no say in what it gets.
+There are four distinct approaches to fix this, from simple to powerful.
+
+── APPROACH 1: GRACEFUL DEGRADATION (simplest, works today) ──────────────
+
+Tell the LLM in the system prompt:
+  "If the context does not contain enough information to answer, say so
+   clearly and tell the user what kind of source or topic would help."
+
+Works: the LLM says "I don't see anything about X in my knowledge base"
+  instead of hallucinating. No code change needed beyond the prompt.
+Does NOT work: the LLM still can't fix the retrieval itself. It just fails
+  gracefully.
+
+── APPROACH 2: LLM EMITS A RETRY SIGNAL (medium, high value) ─────────────
+
+Instruct the LLM to output a structured marker when context is missing:
+  <<SEARCH: better search terms here>>
+
+The server detects this pattern in the response, runs a second retrieval
+with those terms (possibly with higher topK or source filter), appends
+the new chunks, and calls the LLM again with the full combined context.
+
+What works: the LLM's language understanding produces better search terms
+  than the user's original question. E.g. user asks "how does it split
+  text?" → LLM signals <<SEARCH: chunker text splitting algorithm>>.
+What doesn't: LLMs don't always follow output format reliably. Need a
+  fallback if the marker isn't present. Also adds a second LLM + embed call.
+Complexity: ~30 lines in server.mjs (detect marker, re-retrieve, re-ask).
+
+── APPROACH 3: TWO-PHASE ASK (reliable, doubles cost) ────────────────────
+
+Phase 1 — Triage call (cheap, no context needed):
+  Ask the LLM: "Given this question, list 2-3 specific search queries
+  that would retrieve the most relevant context from a vector database."
+  Use a fast/cheap model for this step.
+
+Phase 2 — Answer call (normal):
+  Run all triage queries through the retriever, merge + deduplicate chunks,
+  pass to LLM for the real answer.
+
+What works: consistently better retrieval. The triage step rewrites vague
+  questions ("tell me about pythia source code") into precise ones
+  ("pythia ingest pipeline", "pythia chunker algorithm", "pythia vector
+  storage"). Each gets topK results → combined context is much richer.
+What doesn't: doubles latency and cost. Triage call must be fast.
+Complexity: ~50 lines. Needs a second ask() variant in llm.mjs.
+
+── APPROACH 4: AGENTIC RETRIEVAL LOOP (most powerful, most complex) ──────
+
+The LLM becomes an agent that can request context iteratively:
+  Round 1: LLM sees question + no context → emits search tool call
+  Round 2: LLM sees question + retrieved chunks → may emit another search
+           or emit a source filter (from:pythia-src) for targeted retrieval
+  Round N: LLM is satisfied → emits final answer
+
+This is the "tool use" / function-calling pattern. The LLM gets a
+"search(query, source?)" tool. It calls it as many times as needed.
+
+What works: handles arbitrarily complex questions. Can combine sources.
+  Natural fit if the LLM provider supports function calling (Grok, Claude,
+  GPT-4 all do).
+What doesn't: latency grows with each round (each round = embed + Qdrant
+  + LLM call). Must cap rounds (e.g. max 3) to prevent loops.
+Complexity: significant refactor of llm.mjs and server.mjs. ~150 lines.
+
+────────────────────────────────────────────────────────────────
+RECOMMENDATION FOR THIS SYSTEM
+────────────────────────────────────────────────────────────────
+
+Short term → Approach 1 (prompt only): add "if context is insufficient,
+  say so and describe what is missing" to system prompt. Zero code change.
+
+Medium term → Approach 2 (retry signal): LLM emits <<SEARCH:...>> marker.
+  Server re-retrieves and re-asks. High value for ~30 lines of code.
+  Pairs well with quick-win C (source-filtered retrieval) so the LLM can
+  also emit <<SEARCH from:pythia-src: chunker>>.
+
+Long term → Approach 4 (tool use loop): proper agentic retrieval.
+  Only worth it once the rest of the retrieval pipeline is solid.
+
+------------------------------new question-----------------------------
+
+postphoning decision.
+Want to know first, how the filename can be made relevant.
+example src_pythia is relevant context info, for looking for source code snippets in pythia
+
+ANSWER:
+────────────────────────────────────────────────────────────────
+MAKING THE FILENAME / FOLDERNAME PART OF THE EMBEDDING
+────────────────────────────────────────────────────────────────
+
+WHY THE NAME IS INVISIBLE RIGHT NOW
+  The embedding model only sees the chunk text — raw code. It has no idea
+  the chunk came from "pythia-src". The vector it produces reflects "export
+  function chunk(text)..." not "pythia source code". Filename and folder
+  are stored in Qdrant as payload metadata, but metadata is never embedded.
+
+THE FIX: PREPEND A NATURAL-LANGUAGE HEADER BEFORE EMBEDDING
+  Before calling embed(), prefix the text with a line that describes
+  where the chunk came from. The embedding model then encodes both
+  the path context AND the code content into one vector.
+
+  Without prefix:  embed("export function chunk(text) {...")
+  With prefix:     embed("pythia source code, file: chunker\nexport function chunk(text) {...")
+
+  Now a query "source code snippets in pythia" semantically overlaps
+  with that prefix, so the chunk surfaces in results.
+
+THE PREFIX SHOULD BE NATURAL LANGUAGE, NOT STRUCTURED
+  bge-base-en-v1.5 is trained on natural language. It understands words,
+  not bracket syntax. Compare:
+
+  WORSE  → "[pythia-src::chunker.mjs]"     (punctuation-heavy, NL-opaque)
+  BETTER → "pythia source code, file: chunker"  (reads like a sentence)
+
+  The model maps "pythia source" and "source code in pythia" and
+  "pythia chunker" all close together in vector space.
+
+FOLDER NAME PRETTIFICATION
+  Folder names often use hyphens/underscores as word separators.
+  These should be expanded before building the prefix:
+
+    pythia-src   →  "pythia source"
+    my_notes     →  "my notes"
+    api_v2       →  "api v2"
+
+  Rule: replace - and _ with space, trim extension from file part.
+
+  Full prefix for docsource/pythia-src/lib/log.mjs:
+    "pythia source, file: lib log"
+  or more verbosely:
+    "pythia source code library log file"
+
+WHAT TO DO WITH THE PREFIX AT STORAGE/DISPLAY TIME
+  Two options:
+
+  Option X — prefix only for embedding, store original text
+    embed("pythia source, file: chunker\n" + chunkText)  ← vector
+    store payload.text = chunkText                        ← LLM sees raw code
+    → retrieval improves, but LLM still doesn't know which file it came from
+    → needs option B (pass source::snippet in context) separately
+
+  Option Y — prefix both for embedding AND store it in the chunk text
+    embed(prefixedText)
+    store payload.text = prefixedText                     ← LLM sees path too
+    → single change covers both retrieval AND LLM context
+    → slight downside: LLM context is a little noisier
+    → RECOMMENDED: simpler, two birds one stone
+
+HOW MUCH DOES THE PREFIX DILUTE THE CONTENT VECTOR?
+  Negligible. The prefix is short (5-8 words). The code chunk is 100-300
+  tokens. The embedding is a weighted mean-pool of all tokens. The code
+  tokens still dominate; the prefix just adds a small semantic pull toward
+  "pythia source" in the vector space. This is the intended effect.
+
+WHERE THE CHANGE LIVES IN CODE
+  ingest.mjs — buildEmbedText(source, snippetName, chunkText) helper
+  called just before embed(). ~10 lines total.
+
+  function buildEmbedText(source, snippetName, chunkText) {
+    const label = [source, snippetName]
+      .filter(Boolean)
+      .map(s => s.replace(/[-_]/g, ' ').replace(/\.[a-z]+$/i, '').trim())
+      .join(', file: ');
+    return label ? `${label}\n${chunkText}` : chunkText;
+  }
+
+  For top-level files (no snippet), source alone becomes the prefix.
+  For subfolder files, both folder and file contribute.
+  For files with no meaningful name (e.g. index.txt), the prefix is minimal.
+
+SIDE EFFECT: EXISTING VECTORS BECOME STALE
+  All previously ingested chunks were embedded WITHOUT the prefix.
+  Their vectors don't include path context. A full re-ingest is needed
+  after this change. This is the main cost of the fix.

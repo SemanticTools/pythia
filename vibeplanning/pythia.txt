@@ -1,0 +1,301 @@
+PYTHIA — SYSTEM DOCUMENTATION
+==============================
+Version: 0.1.0
+Last updated: 2026-02-19
+
+
+WHAT IS PYTHIA?
+---------------
+
+Pythia is a self-hosted RAG (Retrieval-Augmented Generation) knowledge
+base system. You put documents into it, and then you can ask questions
+about them in plain language. It finds the most relevant parts of your
+documents and passes them to a large language model (LLM) to generate
+a clear, grounded answer.
+
+The name comes from the Oracle of Delphi — the Pythia was the ancient
+Greek high priestess who delivered knowledge and prophecy to those who
+sought it.
+
+Pythia is designed for companies or teams that want a private,
+controllable knowledge base — one where the answers come from your
+documents, not from the LLM's general training.
+
+
+WHAT CAN PYTHIA DO?
+--------------------
+
+- Answer questions based strictly on your uploaded documents (strict mode)
+- Answer questions using your documents first, then fall back to general
+  knowledge when the topic isn't covered (hybrid mode)
+- Keep track of a conversation — follow-up questions like "what about
+  the second one?" work correctly because Pythia remembers the thread
+- Auto-ingest new or updated documents on startup (or via API trigger)
+- Re-ingest a document when it changes, cleanly replacing old content
+- Delete a document and remove all its indexed content
+- Serve a web UI for chatting with the knowledge base
+
+
+HOW IT WORKS — THE RAG PIPELINE
+---------------------------------
+
+When you add a document, Pythia runs it through this pipeline:
+
+  1. CHUNK
+     The document is split into overlapping text segments (max ~1000
+     characters each). The chunker prefers splitting on blank lines
+     (paragraph boundaries), and falls back to single-line splits when
+     a paragraph is too large.
+
+  2. EMBED
+     Each chunk is turned into a vector (an array of 768 numbers) using
+     a local embedding model (Xenova/bge-base-en-v1.5). This model runs
+     entirely on your machine — no external API call is needed for
+     embedding. Documents use no prefix; query text uses the BGE prefix
+     "Represent this sentence for searching relevant passages: ".
+
+  3. STORE
+     Each vector is stored in Qdrant (a local vector database) with a
+     payload containing: the source file name, the chunk index, and the
+     original text. The raw text of the document is also saved to disk
+     in data/docs/.
+
+When you ask a question:
+
+  4. RETRIEVE
+     The question (possibly expanded with the last user message for
+     follow-up context) is embedded using the same model. Qdrant finds
+     the top 5 most similar chunks using cosine similarity.
+
+  5. ANSWER
+     The retrieved chunks are assembled into a CONTEXT block and passed
+     to the LLM (Claude) along with the conversation history and a
+     system prompt. The LLM generates an answer grounded in the context.
+     The answer and the source file names are returned to the user.
+
+
+TECHNOLOGY STACK
+-----------------
+
+  Runtime          Node.js, ESM modules (.mjs), no classes
+  LLM provider     Anthropic Claude (via llamiga wrapper)
+  LLM model        claude-sonnet-4-20250514 (configurable)
+  Embeddings       Xenova/bge-base-en-v1.5, 768 dimensions (local, CPU)
+  Vector database  Qdrant (runs as a local Docker container)
+  Config format    TOML (system.toml, prompting.toml, users.toml)
+  Storage          Plain files (data/docs/), JSON index (data/ingest-index.json)
+
+Dependencies:
+  @semantictools/llamiga    — multi-provider LLM wrapper
+  @xenova/transformers      — local transformer models (ONNX runtime)
+  @qdrant/js-client-rest    — Qdrant vector database REST client
+  @iarna/toml               — TOML config file parser
+
+
+CODE STRUCTURE
+---------------
+
+  pythia/
+  ├── system.toml            Runtime config (server, LLM, embeddings, etc.)
+  ├── prompting.toml         All LLM system prompts — never hardcoded in code
+  ├── users.toml             (planned) User auth, tenants, roles
+  ├── package.json           npm package manifest
+  ├── backup.mjs             Utility: create a named backup of the project
+  ├── restore.mjs            Utility: restore a backup
+  ├── docsource/             Drop documents here — auto-ingested on startup
+  ├── data/
+  │   ├── docs/              Raw document storage (one file per source)
+  │   └── ingest-index.json  Tracks mtime per file, prevents redundant re-ingest
+  ├── log/                   Per-channel log files (system, http, ingest, etc.)
+  ├── www-static/            Web UI files (index.html, style.css, app.js)
+  └── src/
+      ├── main.mjs           Entry point: init → sync → start server
+      ├── config.mjs         Loads and validates system.toml
+      ├── server.mjs         HTTP server and route handlers
+      ├── ingest.mjs         Ingest pipeline: chunk → embed → store
+      ├── sync.mjs           Auto-sync docsource/ on startup or /update call
+      ├── chunker.mjs        Paragraph-aware text splitter
+      ├── embedder.mjs       Lazy-loads local embedding model, BGE prefix logic
+      ├── vectors.mjs        Qdrant client: init, upsert, search, deleteBySource
+      ├── storage.mjs        Plain file read/write/delete for raw documents
+      ├── retriever.mjs      Query expansion + vector search
+      ├── llm.mjs            LLM call: system prompt, history replay, response
+      ├── prompts.mjs        Loads prompting.toml, resolves mode/provider/model
+      └── lib/
+          └── log.mjs        Logger factory — per-channel log files + console
+
+
+CONFIGURATION — system.toml
+-----------------------------
+
+  [server]
+  port = 3000
+  host = "127.0.0.1"        Localhost only by default
+
+  [llm]
+  provider = "anthropic"
+  model    = "claude-sonnet-4-20250514"
+  mode     = "hybrid"       "strict" or "hybrid" (see LLM Modes below)
+
+  [embeddings]
+  model = "Xenova/bge-base-en-v1.5"
+  dims  = 768
+
+  [vectors]
+  url        = "http://localhost:6333"
+  collection = "pythia"
+
+  [storage]
+  path = "./data/docs"
+
+  [chunker]
+  max_chars = 1000
+
+  [ingest]
+  docsource_dir = "./docsource"
+  index_path    = "./data/ingest-index.json"
+
+
+LLM MODES
+----------
+
+Pythia supports two answer modes, set in system.toml under [llm].
+
+  strict  — The LLM is only allowed to use the retrieved context. If the
+            answer is not in the documents, it says so. It will NOT use
+            its general training knowledge. Good for compliance-sensitive
+            use cases where every answer must be traceable to a source.
+
+  hybrid  — The LLM uses the knowledge base first. When the context is
+            directly relevant, it answers "Based on your knowledge base..."
+            When the context is partly relevant it combines both sources,
+            labelling each clearly. When the context has nothing useful,
+            it falls back to general knowledge and says so. Good for
+            general-purpose use where the KB supplements the LLM rather
+            than replacing it entirely.
+
+The prompts for both modes live in prompting.toml, not in code. They can
+be customised per provider or per model using TOML section names like
+[hybrid::anthropic] or ["hybrid::anthropic::claude-sonnet-4-20250514"].
+
+
+API ENDPOINTS
+--------------
+
+  GET  /health        Returns { "status": "ok" }
+
+  POST /ask           Ask a question
+    Request:  { "question": "...", "history": [{role, content}, ...] }
+    Response: { "answer": "...", "sources": ["file1.txt", ...] }
+
+  POST /ingest        Manually ingest a document by sending text
+    Request:  { "source": "myfile.txt", "text": "..." }
+    Response: { "ok": true }
+
+  DELETE /ingest      Remove a document and all its indexed chunks
+    Request:  { "source": "myfile.txt" }
+    Response: { "ok": true }
+
+  POST /update        Trigger a re-sync of the docsource/ directory
+    Response: { "ingested": [...], "skipped": [...] }
+
+  GET  /              Web UI (index.html)
+
+
+WEB UI
+-------
+
+Pythia has a browser-based chat interface served at http://127.0.0.1:3000.
+
+  - Text input with Enter to submit, Ctrl+Enter for newline
+  - Chat bubble layout: user messages on the right, Pythia on the left
+  - Sources cited under each answer (which files were used)
+  - Conversation history maintained in the browser across turns
+  - Clear button resets the conversation
+  - Ingest panel: paste a source name and text to ingest directly from GUI
+
+The UI sends the full conversation history with each request, allowing
+the LLM to understand follow-up questions in context.
+
+
+LOGGING
+--------
+
+Pythia writes structured logs to the ./log/ directory (configurable via
+the LOG_ROOT environment variable). Each concern has its own log file:
+
+  log/system.log     Startup, Qdrant init, embedding model load
+  log/http.log       Every HTTP request and response (method, path, status, ms)
+  log/ingest.log     Document ingest events (new, update, skip, delete)
+  log/retrieval.log  Query events, query expansion, chunks retrieved
+  log/llm.log        LLM calls (model, context size, tokens, latency)
+  log/stats.log      Machine-readable stats for ingest and query events
+
+All logs are also printed to the console at runtime.
+
+
+DOCUMENT AUTO-SYNC
+-------------------
+
+Any file dropped into the docsource/ folder will be automatically
+ingested the next time Pythia starts, or when POST /update is called.
+
+Pythia tracks each file's modification time (mtime) in
+data/ingest-index.json. If the mtime has not changed, the file is
+skipped. If it has changed, the old vectors and stored text are removed
+first, then the file is re-ingested fresh.
+
+Files beginning with "." are ignored.
+
+
+CURRENT STATUS (as of 2026-02-19)
+-----------------------------------
+
+Pythia is a working prototype. The core RAG pipeline is fully functional:
+documents can be added, questions can be answered, conversation history
+works, and hybrid vs strict mode is operational.
+
+What is working:
+  - Full ingest pipeline (chunk, embed, store)
+  - Vector search via Qdrant
+  - Strict and hybrid LLM answer modes
+  - Multi-turn conversation with history
+  - Query expansion for better follow-up retrieval
+  - Auto-sync of docsource/ on startup and via API
+  - Re-ingest and delete of documents
+  - Web UI with chat interface
+  - Structured per-channel logging
+
+What is planned but not yet built:
+  - User authentication (API keys per user)
+  - Multi-tenancy (hard-separated company namespaces)
+  - Role-based access control on documents
+  - Personal knowledge space per user
+  - Admin GUI for managing company-wide documents
+  - Backup browser and restore in the GUI
+
+The two planned operating modes (not yet implemented):
+  - Personal mode: no login, always admin, simplified single-user UI
+  - Enterprise mode: full multi-tenant, per-company isolation,
+    user roles, admin-managed global knowledge
+
+
+RUNNING PYTHIA
+---------------
+
+Requirements:
+  - Node.js 18+
+  - Qdrant running locally (Docker recommended):
+      docker run -p 6333:6333 qdrant/qdrant
+  - An Anthropic API key in the environment:
+      export ANTHROPIC_API_KEY=sk-ant-...
+
+Start the server:
+  npm start
+
+Pythia will:
+  1. Connect to Qdrant and create the collection if needed
+  2. Scan docsource/ and ingest any new or changed files
+  3. Start the HTTP server on 127.0.0.1:3000
+
+Then open http://127.0.0.1:3000 in your browser.

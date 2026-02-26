@@ -1,0 +1,97 @@
+Personal mode can be configured in the file toml file calling it operational-mode.
+
+Personal mode means.
+We are admin. We can do anything.
+No login. (keep mind for future)
+Sleek hacker-ish gui.
+
+1. tabs.  main tab is is discussion tab.
+2. second tab is upload tab.
+
+in the main tab, we can unhide a section called quick-memory.
+Here you can 
+1. add notes (will be appended to username-notes.txt)
+2. edit quick-memory (allow to see whole file and make edits, but gui will ask twice "are you sure to save")
+
+We will also make sources more granular.
+Not it is just <filename>
+But we will also allow <filename>::<snippetid>
+
+A snippet is indicated like this in a text file
+
+%% <snippet name (only alfanum, rest ignore)>
+
+second tab will have upload tab.
+Here we can upload file
+List the files.
+Rename a file.
+Disable a file. (filename convention, prefix = "_d_" )
+Enable a file (if disabled)
+
+Note "%%" string and "_d_" string will be configurable in toml file again.
+
+Note: Make handling storage of files wrapped in a module.
+For enterprise we will use a DB for it.
+
+Questions or comments below please:
+----------------------------------------
+
+Q1: operational-mode in system.toml — proposed shape:
+      [operational]
+      mode = "personal"
+    Correct? Or do you want a different key name?
+
+#yes
+
+Q2: quick-memory filename — in personal mode there's no login, so
+    "username-notes.txt" has no username to fill in. Options:
+      a) just "notes.txt"
+      b) configurable name in toml (e.g. quick_memory_file = "notes.txt")
+    Also: does this file live in docsource/ (auto-ingested like everything
+    else), or somewhere separate?
+
+#c - username will be "superuser@local"  
+
+Q3: quick-memory re-ingest on append — every time a note is added, the
+    file changes. Does that trigger a full re-ingest of the notes file
+    on save? Or only when the user explicitly triggers it?
+
+#full ingest automatically, but only that file
+
+Q4: snippet end boundary — %% marks the START of a snippet. How does it
+    end? Options:
+      a) next %% marker starts the next snippet (EOF ends the last one)
+      b) explicit end marker like %%end or %%/
+    Also: what happens to text before the first %% in a file — is it
+    an unnamed chunk, or ignored for snippet purposes?
+
+#option a, bit also option b ends it
+
+Q5: snippet chunks — should the chunker respect snippet boundaries
+    (never split a chunk across a snippet boundary)? Or are snippets
+    purely for source citation, and chunking still works as normal?
+
+#purely for source, and later for editing through chat (ie, show me snippets about x. aha, ok, overwrite snippet c, and add this "bla bla bla" in same bucket)  - we call files buckets in the gui from now
+
+Q6: disable/enable — when a file is disabled (prefix _d_ added):
+      a) should its vectors be removed from Qdrant immediately?
+      b) or just skip it on next sync (so it stays searchable until restart)?
+    And enable: strip prefix → re-ingest on next sync, or immediately?
+
+#immediatly
+
+Q7: rename — when a file is renamed in the GUI, should Pythia:
+      a) remove old vectors + re-ingest under new name (clean)
+      b) just rename the file and update the index (fast, but leaves
+         old source name in any existing vectors)
+
+#a
+
+Q8: "sleek hacker-ish" GUI — any specific direction?
+      - Dark theme with monospace font?
+      - Terminal-inspired (green on black)?
+      - Dark + minimal (no borders, just whitespace)?
+    Happy to go any direction, just want to match your vision.
+
+#Standard light, dark or terminal mode, with switch in gui (save to file), posibility for custom banner and favicon.
+#Nothing configured means dark mode. Keyboard shortcut for everything.

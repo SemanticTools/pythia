@@ -1,0 +1,252 @@
+PYTHIA — KNOWLEDGE MANAGEMENT PROPOSAL (MULTI-TENANT)
+======================================================
+Status: Draft for discussion
+Date: 2026-02-19
+
+
+0. CORE PRINCIPLE — TENANT HARD SEPARATION
+-------------------------------------------
+
+A tenant is a company (or any top-level organisational unit).
+
+Hard rules — no exceptions:
+  - A user from tenant A can NEVER read data belonging to tenant B.
+  - A user from tenant A can NEVER write data to tenant B's space.
+  - An admin from tenant A can NEVER see or manage users of tenant B.
+  - Tenant separation is enforced at every layer: file paths, vector
+    payload filters, and auth resolution. Any single layer being
+    bypassed must NOT expose cross-tenant data.
+
+A "super_admin" role exists only for Pythia system operators — it can
+manage tenants themselves (create, disable). It is set in users.toml
+and never granted through the GUI.
+
+
+1. THREE KNOWLEDGE SCOPES
+--------------------------
+
+GLOBAL (tenant-wide, formerly "company-wide")
+  - Lives in docsource/{tenant}/
+  - Managed by tenant admins via GUI tab 3
+  - Has role-based read access per file (within tenant only)
+  - Datetime backups on every overwrite
+
+USER (personal, within a tenant)
+  - Lives in userdata/{tenant}/{username}/
+  - Only readable by the owning user — hard boundary, no exceptions
+  - Managed by the user themselves via GUI tab 2
+  - Multiple files with optional categories (e.g. "meetings", "notes")
+  - Re-ingest on upload (same overwrite-safe pattern as global)
+
+(There is no cross-tenant scope. Period.)
+
+
+2. TENANT STORAGE LAYOUT
+--------------------------
+
+  docsource/
+    {tenant-a}/
+      onboarding.txt
+      payroll.txt
+      .meta/
+        onboarding.txt.json    ← roles allowed to read this file
+        payroll.txt.json
+      .backups/
+        payroll.txt/
+          2026-02-19_14-00-00/
+            payroll.txt
+    {tenant-b}/
+      handbook.txt
+      ...
+
+  userdata/
+    {tenant-a}/
+      alice/
+        meeting-notes.txt
+        drafts.txt
+      bob/
+        research.txt
+    {tenant-b}/
+      carol/
+        ...
+
+Rule: code that accesses these paths must always have tenant as the
+first path segment, and must validate it equals the authenticated
+user's tenant before any read or write.
+
+
+3. ROLES
+---------
+
+Roles are always scoped to a tenant. An "admin" in tenant-a is just
+a regular user from tenant-b's perspective.
+
+  super_admin — system operator only (set in users.toml, not via GUI)
+                can create/disable tenants, has no access to tenant data
+  admin       — tenant-level: upload/overwrite/download global files,
+                assign file roles, manage users within own tenant
+  user        — can query within permitted scope, manage own personal files
+  (future)    — custom roles like "hr", "engineering", "finance"
+                all still scoped to a single tenant
+
+File-level read access (global files only, within one tenant):
+  Each global file has a list of roles that may read it.
+  Example: payroll.txt       → roles: ["admin", "hr"]
+           product-roadmap.txt → roles: ["admin", "engineering", "product"]
+           onboarding.txt     → roles: ["*"]  ← everyone in this tenant
+
+  Stored in docsource/{tenant}/.meta/{filename}.json
+  Example: { "roles": ["admin", "hr"] }
+
+Personal files are always scoped to owner — no role list needed.
+
+
+4. AUTHENTICATION
+------------------
+
+  Q1: How do users identify themselves to the API?
+      API key per user. Sent as X-Api-Key header with every request.
+      Server resolves key → username + tenant + roles.
+      Easy to revoke. No external deps. Upgrade to session-based login
+      later when a login page is added.
+
+  Q2: Where are users and roles stored?
+      users.toml at root. Admin-managed file, not editable through GUI.
+      Example entry:
+
+        [users.alice]
+        tenant  = "acme"
+        roles   = ["admin", "engineering"]
+        api_key = "sk-acme-alice-abc123"
+
+        [users.bob]
+        tenant  = "acme"
+        roles   = ["user"]
+        api_key = "sk-acme-bob-def456"
+
+        [users.carol]
+        tenant  = "globocorp"
+        roles   = ["user"]
+        api_key = "sk-gc-carol-xyz789"
+
+        [users.sysop]
+        tenant  = null
+        roles   = ["super_admin"]
+        api_key = "sk-sys-..."
+
+  Q3: Can a user have multiple roles?
+      Yes. roles = ["admin", "engineering"] is valid.
+
+  Q4: How is tenant determined at runtime?
+      Always from the resolved user record — NEVER from the request body
+      or URL. The client has no say in which tenant they belong to.
+
+
+5. RETRIEVAL WITH SCOPING
+--------------------------
+
+When a user asks a question, retrieval filters to:
+  - Chunks from global files in their tenant that their role(s) can access
+  - Chunks from their own personal files (same tenant)
+  - Nothing else — not other users, not other tenants
+
+Qdrant payload per chunk:
+  - source:  "onboarding.txt"
+  - scope:   "global" | "user"
+  - tenant:  "acme"
+  - owner:   null (global) or "alice" (user)
+  - roles:   ["*"] or ["admin","hr"]  (global only; omitted for user scope)
+
+Filter applied at query time (pseudocode):
+  must: [
+    { tenant: == current_user.tenant },
+    one of:
+      (scope == "global" AND (roles contains "*" OR roles intersects user.roles))
+      (scope == "user"   AND owner == current_user.username)
+  ]
+
+Tenant filter is ALWAYS the first condition — no vector is even ranked
+unless it belongs to the authenticated user's tenant.
+
+
+6. GUI — THREE TABS
+--------------------
+
+All tabs implicitly operate within the authenticated user's tenant.
+No tenant selector is shown. No cross-tenant data is ever returned.
+
+TAB 1 — QUERY (existing, extended)
+  - Chat interface (current)
+  - Shows sources in answers
+  - User only sees results from their permitted tenant + role scope
+  - No change to UX, scoping is transparent
+
+TAB 2 — MY NOTES (personal)
+  - List of user's own files (name, category, last updated)
+  - Upload new file (name, category, paste or file picker)
+  - Re-upload/overwrite existing (triggers re-ingest)
+  - Delete file
+  - Categories are free-form tags, used for display only (not retrieval filtering yet)
+
+TAB 3 — COMPANY KNOWLEDGE (tenant admin only, hidden for non-admins)
+  - List of all global files for this tenant (name, roles, last updated, backup count)
+  - Upload new file (name, assign roles)
+  - Overwrite existing (old version auto-backed up, see section 7)
+  - Download current version of any file
+  - (Future) Browse and restore from backups
+
+
+7. BACKUP STRATEGY (global files)
+-----------------------------------
+
+On every overwrite of a global file within a tenant:
+  - Current version is copied to:
+    docsource/{tenant}/.backups/{filename}/{YYYY-MM-DD_HH-MM-SS}/
+  - New version takes its place, re-ingested
+  - Backup is never deleted automatically
+  - (Future) GUI tab 3 lists backups per file, allows restore
+
+
+8. INGEST-INDEX
+----------------
+
+ingest-index.json becomes per-tenant:
+  data/ingest-index.json:
+    {
+      "acme": {
+        "onboarding.txt":     { "mtime": 12345, "ingested_at": "..." },
+        "payroll.txt":        { "mtime": 67890, "ingested_at": "..." }
+      },
+      "globocorp": {
+        "handbook.txt":       { "mtime": 11111, "ingested_at": "..." }
+      }
+    }
+
+Sync at startup iterates over all tenant subdirectories in docsource/.
+Each file is keyed by tenant + filename to avoid collisions.
+
+
+9. OPEN ITEMS / DECISIONS NEEDED
+----------------------------------
+
+  - Confirm users.toml approach for auth and tenant assignment
+  - Personal file categories: tags only for now, or affect retrieval scope?
+  - Tab 3: hidden entirely for non-admins, or visible but locked?
+  - Max file size limit for uploads?
+  - Should re-ingesting a personal file clear conversation history in the UI?
+  - Super_admin GUI: out of scope for now, manage tenants via users.toml only?
+  - Tenant name format: slug only (a-z, 0-9, hyphens)? Validate on user load?
+  - On user deletion: purge their personal vectors + files, or archive?
+
+
+=USER INPUT================================================
+
+I will review all this soon. But we need 2 modes.
+1. personal. (no login, always admin, all rights, gui simplified)
+2. enterprise. All we discussed above.
+
+In both modes we have
+1. General Knowledge
+2. User knowledge 
+
+2. Only in enterprise will we have user login per company.
