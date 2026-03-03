@@ -1,0 +1,472 @@
+PYTHIA LINK MODE — IMPLEMENTATION PLAN
+========================================
+Date: 2026-03-01
+
+OVERVIEW
+--------
+"Link Mode" is a keyboard-driven overlay for storing, finding, and launching URLs.
+Activate it from anywhere in the app with a single keystroke. Inside link mode,
+single-key commands and instant fuzzy search let you get to any link in 2-3
+keystrokes. Escape or the same toggle key exits.
+
+URLs pasted into the main ask textarea are saved to links automatically and
+silently — no confirmation, no extra UI.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 1 — USER EXPERIENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ENTERING / EXITING LINK MODE
+  Toggle key:  Ctrl+L   (works from anywhere in the app, any tab)
+  Exit:        Escape   OR   Ctrl+L again
+  Visual cue:  fullscreen overlay fades in/out (200ms), search box auto-focused
+
+LAYOUT (ASCII mockup)
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  LINK MODE          [a] add  [d] del  [e] edit  [Esc] exit      │
+  ├─────────────────────────────────────────────────────────────────┤
+  │  🔍 > ____________________________________________               │
+  ├─────────────────────────────────────────────────────────────────┤
+  │  ►  GitHub                  github.com          [dev] [work]    │
+  │     Hacker News             news.ycombinator.com                │
+  │     MDN Web Docs            developer.mozilla.org   [ref]       │
+  │     Pythia Repo             localhost:5000                       │
+  │     ...                                                          │
+  └─────────────────────────────────────────────────────────────────┘
+  ► = selected row (highlighted)
+  Tags shown as small chips on the right
+
+KEYSTROKES INSIDE LINK MODE
+  ↑ / ↓         move selection up/down
+  Enter         open selected link in new browser tab
+  Type text     instant fuzzy filter (updates list as you type)
+  #<text>       tag-only filter: type # then partial tag name (see TAG SEARCH)
+  Ctrl+V        paste — if clipboard is a URL, jumps to "add" flow
+  a             open add-link inline form (pre-fills URL from clipboard if valid)
+  d             delete selected link (confirm with y/n prompt in the status bar)
+  e             edit selected link inline (title, tags, note)
+  t             quick tag editor on selected link (see TAG EDITING)
+  c             copy selected URL to clipboard
+  /             focus search box (in case it lost focus)
+  Escape        exit link mode (or cancel current inline form)
+  ?             show link mode help overlay
+
+PASTE / ADD WORKFLOW (via link mode)
+  1. User has a URL in clipboard.
+  2. Press Ctrl+L to enter link mode.
+  3. Press Ctrl+V (or 'a') — URL is pre-filled in the add form.
+  4. Backend fetches the page <title> automatically.
+  5. User can accept title, add optional tags, press Enter to save.
+  6. Link appears at top of list. Total keystrokes: ~5.
+
+PASTE INTO MAIN ASK PROMPT (silent auto-save)
+  When a URL is pasted into the #question textarea, it is saved to links
+  automatically with no UI and no interruption to the ask flow.
+
+  1. User pastes a URL into the ask textarea.
+  2. URL is saved silently: POST /links { url }.
+  3. Title is fetched in the background and backfilled via PATCH /links/:id.
+  4. The textarea is unaffected — user continues writing their question.
+
+  Only clean URL pastes trigger this (entire pasted string must be a URL).
+  Mixed text pastes are ignored.
+
+QUICK FIND + LAUNCH WORKFLOW
+  1. Press Ctrl+L.
+  2. Type a few chars of title, URL, or tag.
+  3. ↓ to select if needed.
+  4. Enter to open.
+  Total keystrokes from any state: ~4-6.
+
+SEARCH BEHAVIOR
+  - Instant client-side filter (no server round-trip).
+  - Searches: title, URL, tags, note.
+  - Tags are first-class: partial tag matches rank above title/URL matches.
+  - Most-visited links float up when search box is empty.
+  - Visits counter incremented on each open.
+  - See FUZZY SEARCH ALGORITHM for full scoring.
+
+TAG SEARCH (# prefix)
+  Typing # in the search box switches to tag-only filter mode.
+  Only links where at least one tag starts with (or contains) the typed
+  partial are shown. Everything else is hidden.
+
+  Examples:
+    #prod   → shows links tagged "prod", "production", "prod-db"
+    #dep    → shows links tagged "deploy", "deployment", "devops"
+    #       → shows all links that have any tag (useful for browsing)
+
+  Visual cue: search box border highlights (accent color) when in tag mode.
+  Normal typing (no #) returns to full search immediately.
+
+  After filtering, ↑/↓/Enter work exactly the same — walk to the link,
+  press Enter to launch.
+
+TAG EDITING ('t' key — quick tag editor)
+  Pressing 't' on a selected link opens an inline tag editor in #link-status
+  without leaving link mode. The workflow:
+
+    ┌──────────────────────────────────────────────────────┐
+    │ Tags: [prod] [deploy] ×    [____________] ↓          │
+    │        ↑ existing chips     ↑ tag input  autocomplete│
+    └──────────────────────────────────────────────────────┘
+
+  - Existing tags shown as removable chips (× to remove).
+  - Type in the input: a dropdown of matching existing tags appears below.
+  - ↓ / Tab  move into the autocomplete dropdown.
+  - Enter    select highlighted suggestion OR commit typed tag if no dropdown.
+  - Space or comma  commit the current typed tag (add it, clear input).
+  - Backspace on empty input  removes the last tag chip.
+  - Enter on empty input  saves and closes the tag editor.
+  - Escape  cancels without saving.
+
+  Tag autocomplete source: all unique tags across all links in _links,
+  filtered to those starting with the current input (case-insensitive).
+  Sorted alphabetically. Max 6 suggestions shown.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 2 — DATA MODEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STORAGE FILE:  data/links.json
+FORMAT:        JSON array, sorted by addedAt descending on write.
+
+LINK OBJECT:
+  {
+    "id":      "uuid-v4",
+    "url":     "https://...",
+    "title":   "Page Title",         // auto-fetched, editable
+    "tags":    ["tag1", "tag2"],     // optional, array of strings
+    "note":    "short free text",    // optional
+    "addedAt": "2026-03-01T12:00Z",
+    "visits":  0                     // incremented each time link is opened
+  }
+
+No Qdrant needed — all links are kept in memory at runtime (links.json is
+small, typically <1000 entries). Fuzzy search runs in JS on the full array.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 3 — BACKEND (server.mjs additions)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+NEW FILE:  src/links.mjs
+  - loadLinks()          read data/links.json, return array (empty if missing)
+  - saveLinks(arr)       write data/links.json
+  - addLink({url,title,tags,note})   create, assign uuid, addedAt, visits:0
+  - updateLink(id, patch)            merge patch into existing record
+  - deleteLink(id)                   remove by id
+  - bumpVisit(id)                    increment visits
+
+NEW ENDPOINTS in server.mjs:
+
+  GET    /links            → 200 { links: [...] }
+  POST   /links            → 201 { link: {...} }
+                             body: { url, title?, tags?, note? }
+  PATCH  /links/:id        → 200 { link: {...} }
+                             body: any subset of { url, title, tags, note }
+  DELETE /links/:id        → 204
+  POST   /links/:id/visit  → 204   (increments visits counter)
+  GET    /links/fetch-title?url=...  → 200 { title: "..." }
+                             server fetches the URL, parses <title> tag,
+                             returns it. Times out at 5s. Returns "" on fail.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 4 — FRONTEND
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILES CHANGED:
+  www-static/index.html  — add overlay markup
+  www-static/app.js      — add link mode state + handlers
+  www-static/style.css   — add overlay / link list styles
+
+HTML ADDITIONS (in index.html, before closing </body>):
+  <div id="link-mode-overlay" hidden>
+    <div id="link-mode-panel">
+      <div id="link-mode-header">
+        <span>LINK MODE</span>
+        <span id="link-mode-hints">[a] add  [d] del  [e] edit  [Esc] exit</span>
+      </div>
+      <input id="link-search" type="text" placeholder="search / paste URL…" autocomplete="off">
+      <div id="link-status"></div>     <!-- inline status / confirm / edit form -->
+      <ul id="link-list"></ul>
+    </div>
+  </div>
+
+JS ADDITIONS IN app.js:
+
+  State:
+    let _linkMode = false;
+    let _links    = [];         // full array, loaded on first open
+    let _filtered = [];         // current filtered+ranked list
+    let _linkSel  = 0;          // selected index in _filtered
+
+  Functions:
+    openLinkMode()              fetch /links, populate list, show overlay, focus search
+    closeLinkMode()             hide overlay, restore previous focus
+    toggleLinkMode()            openLinkMode / closeLinkMode
+
+    filterLinks(query)          fuzzy rank _links → _filtered, re-render list
+    renderLinkList()            clear #link-list, append <li> for each _filtered item
+    selectLink(idx)             highlight row, scroll into view
+    openSelectedLink()          POST /links/:id/visit, window.open(url, '_blank')
+
+    showAddForm(prefillUrl)     show inline add form in #link-status
+    submitAddForm()             POST /links, push to _links, re-render
+    showEditForm(link)          show inline edit form for selected link
+    submitEditForm()            PATCH /links/:id, update _links, re-render
+    confirmDelete()             show "delete? [y/n]" in #link-status
+    executeDelete()             DELETE /links/:id, splice _links, re-render
+
+    fetchTitle(url)             GET /links/fetch-title?url=..., return title string
+    isUrl(str)                  cheap regex: starts with http(s):// or www.
+
+    allTags()                   derive sorted unique tag list from _links array
+    tagSuggestions(partial)     allTags() filtered to those starting with partial
+
+  Tag editor state (active when 't' pressed):
+    _tagEditorLink              link being edited
+    _tagEditorDraft             copy of tags array being modified
+
+    openTagEditor(link)         show inline tag editor in #link-status,
+                                  render existing tags as chips + input + dropdown
+    closeTagEditor(save)        if save: PATCH /links/:id { tags: _tagEditorDraft },
+                                  update _links, re-render; always clear editor state
+    tagEditorInput(event)       on input keyup: update autocomplete dropdown
+    tagEditorKeydown(event)     Space/comma → commitTag(); Backspace on empty →
+                                  remove last chip; Enter on empty → closeTagEditor(true);
+                                  ↓ → move focus to dropdown; Escape → closeTagEditor(false)
+    commitTag(tag)              trim+lowercase tag, add to _tagEditorDraft if not dupe,
+                                  re-render chips, clear input, re-focus input
+    removeTagChip(tag)          remove from _tagEditorDraft, re-render chips
+    renderTagSuggestions()      update dropdown list below tag input
+
+  Ask-textarea paste detection:
+    onAskPaste(event)           paste handler on #question
+                                  reads clipboardData text, calls isUrl()
+                                  if URL: POST /links { url } immediately (fire-and-forget)
+                                          then fetch title, PATCH /links/:id to backfill
+                                  no UI change, no interruption
+
+  Keyboard handler (keydown, captures only when _linkMode = true):
+    ↑ / ↓             selectLink(±1)
+    Enter             openSelectedLink()   OR submit inline form if active
+    a                 showAddForm(clipboardOrEmpty)   (if no form active)
+    d                 confirmDelete()                 (if no form active)
+    e                 showEditForm(selectedLink())    (if no form active)
+    t                 openTagEditor(selectedLink())
+    c                 navigator.clipboard.writeText(selectedUrl)
+    /                 focus #link-search
+    ?                 toggle help
+    Escape            if inline form active → cancel form; else closeLinkMode()
+    y                 confirm delete if confirm prompt shown
+    n                 cancel delete if confirm prompt shown
+    (all other chars) focus search box, append char
+
+  Global keydown (always active):
+    Ctrl+L            toggleLinkMode()
+
+FUZZY SEARCH ALGORITHM (client-side, no library):
+
+  If query starts with '#':
+    tagQuery = query.slice(1).toLowerCase()
+    For each link: include if any tag starts with tagQuery (or contains it).
+    Score = length of longest matching tag prefix (longer prefix = better match).
+    No title/URL/note scoring in tag mode.
+    Special case: '#' alone (empty tagQuery) → show all links that have tags.
+
+  Otherwise (normal mode):
+    q = query.toLowerCase()
+    For each link, compute score:
+      +40  any tag starts with q  (partial tag prefix — highest non-title priority)
+      +35  any tag === q          (exact tag match)
+      +30  title.toLowerCase().startsWith(q)
+      +20  title.toLowerCase().includes(q)
+      +10  url.toLowerCase().includes(q)
+      + 5  note.toLowerCase().includes(q)
+      + 1  per visit (popularity boost, capped at 10)
+    Filter out score=0. Sort descending by score.
+
+  Tag prefix match is ranked higher than title contains to make tag-driven
+  retrieval feel fast — typing "dep" immediately surfaces "deploy" links.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 5 — TITLE FETCHING (server-side)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Why server-side: avoids CORS when fetching arbitrary URLs from the browser.
+
+Implementation in server.mjs (or a small helper):
+  - Use Node.js built-in fetch (available Node 18+).
+  - Set User-Agent to "Mozilla/5.0 …" to avoid bot blocks.
+  - Timeout: AbortController + setTimeout(5000).
+  - Read up to first 8KB of response body (enough to find <title>).
+  - Parse with regex: /<title[^>]*>([^<]+)<\/title>/i
+  - Decode HTML entities (at minimum: &amp; &lt; &gt; &quot; &#39;)
+  - Return { title: "..." } or { title: "" } on any failure.
+  - Never throw — always return a valid JSON response.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 6 — STYLING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  #link-mode-overlay
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0,0,0,0.75); backdrop-filter: blur(2px);
+    display: flex; align-items: center; justify-content: center;
+
+  #link-mode-panel
+    width: min(720px, 95vw); max-height: 80vh;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; display: flex; flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+
+  #link-search
+    width: 100%; padding: 10px 14px; font-size: 1rem;
+    background: var(--input-bg); border: none; border-bottom: 1px solid var(--border);
+    color: var(--fg); outline: none; transition: border-color 0.1s;
+
+  #link-search.tag-mode
+    border-bottom-color: var(--accent);   /* visual cue: tag filter active */
+
+  #tag-autocomplete
+    list-style: none; margin: 0; padding: 4px 0;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    position: absolute; z-index: 10; min-width: 160px; font-size: 0.85rem;
+
+  #tag-autocomplete li
+    padding: 4px 12px; cursor: pointer;
+
+  #tag-autocomplete li.selected,
+  #tag-autocomplete li:hover
+    background: var(--accent-dim);
+
+  #link-list
+    flex: 1; overflow-y: auto; list-style: none; margin: 0; padding: 0;
+
+  #link-list li
+    padding: 8px 14px; cursor: pointer; display: flex; gap: 12px;
+    align-items: baseline; border-bottom: 1px solid var(--border-subtle);
+
+  #link-list li.selected   background: var(--accent-dim);
+  #link-list li:hover      background: var(--hover);
+
+  .link-title              flex: 1; font-weight: 500; white-space: nowrap;
+                           overflow: hidden; text-overflow: ellipsis;
+  .link-url                color: var(--muted); font-size: 0.8rem;
+                           white-space: nowrap; overflow: hidden;
+                           text-overflow: ellipsis; max-width: 280px;
+  .link-tags               display: flex; gap: 4px; flex-shrink: 0;
+  .link-tag                font-size: 0.7rem; padding: 1px 6px;
+                           background: var(--tag-bg); border-radius: 10px;
+                           color: var(--tag-fg);
+
+  Respect the existing CSS variables (--bg, --fg, etc.) so all three themes
+  (dark, light, terminal) work automatically.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 7 — IMPLEMENTATION ORDER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Step 1 — Backend core
+  a. Create src/links.mjs (load/save/CRUD helpers)
+  b. Add /links GET, POST, PATCH/:id, DELETE/:id routes to server.mjs
+  c. Add POST /links/:id/visit route
+  d. Add GET /links/fetch-title route
+
+Step 2 — Frontend skeleton
+  a. Add overlay HTML to index.html
+  b. Add CSS to style.css (all variables, overlay, list, tags)
+  c. Wire Ctrl+L global toggle in app.js
+  d. openLinkMode / closeLinkMode (just show/hide + fetch list)
+
+Step 3 — Search and navigation
+  a. filterLinks + renderLinkList (normal mode scoring)
+  b. Add # prefix detection → tag-only filter mode + search box .tag-mode class
+  c. Keyboard ↑/↓/Enter navigation
+  d. openSelectedLink (visit POST + window.open)
+
+Step 4 — Add flow
+  a. 'a' key → showAddForm with clipboard pre-fill
+  b. Auto-fetch title via /links/fetch-title
+  c. Save on Enter
+
+Step 5 — Ask-prompt silent auto-save
+  a. Add paste event listener to #question textarea
+  b. isUrl() check on pasted text
+  c. Fire-and-forget POST /links, then title backfill via PATCH
+
+Step 6 — Tag editor
+  a. openTagEditor / closeTagEditor
+  b. Tag chip rendering + × removal
+  c. Tag input keydown (Space/comma/Backspace/Enter/↓/Escape)
+  d. allTags() + tagSuggestions() + renderTagSuggestions() dropdown
+  e. PATCH /links/:id on save
+
+Step 7 — Edit and delete flows
+  a. 'e' key → showEditForm inline (title, note, tags field reuses tag editor)
+  b. 'd' key → confirmDelete + y/n
+  c. 'c' key → copy URL
+
+Step 8 — Polish
+  a. Visit count sort on empty query
+  b. ? help overlay
+  c. Animate overlay in/out (opacity transition)
+  d. Make sure all three themes look good
+  e. Add Ctrl+L hint to existing help panel (? button)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 8 — EDGE CASES & NOTES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Pasting a URL while link mode search box is focused: detect isUrl(pastedText),
+  auto-trigger showAddForm(pastedText) instead of filtering.
+
+- Pasting into ask textarea: only trigger auto-save for clean URL pastes
+  (entire pasted string is a URL). Mixed text pastes are ignored.
+
+- Duplicate URLs on ask-paste: silently skip the save if the URL already
+  exists in _links. No error, no UI.
+
+- Title backfill race: if the link is deleted before the title fetch returns,
+  the PATCH is a no-op (check id still exists before applying).
+
+- fetch-title failures: silently fall back to using the raw URL as title.
+  The user can always edit it in link mode.
+
+- Links file missing: treat as empty array, create on first save.
+
+- Tag input format: Space or comma commits a tag. Tags are trimmed and
+  lowercased before storage. Empty strings and duplicates are silently dropped.
+
+- Tag prefix scoring priority: typing "dep" must surface "deploy" links before
+  a link whose title happens to include "dep". Hence tag-prefix score (+40)
+  is higher than title-contains (+20).
+
+- '#' search with no text after it: show all links that have at least one tag.
+  This lets the user browse by tag visually.
+
+- Tag autocomplete source is derived from _links at query time — no separate
+  tag index to maintain. With <1000 links this is fast enough.
+
+- Tag editor focus trap: while the autocomplete dropdown is open, ↑/↓ move
+  within the dropdown. Escape closes the dropdown but keeps the tag editor open.
+
+- The overlay should NOT interfere with textarea keypresses in the main app
+  because it is hidden when not in link mode. The Ctrl+L handler checks
+  event.ctrlKey && event.key === 'l' and calls event.preventDefault().
+
+- Tab order: link mode is a modal overlay; focus should be trapped inside it
+  (Tab should cycle between search and status form fields only).
+
+- No Qdrant, no embeddings needed. Links are a simple CRUD store.
+
+- Future idea: "import from browser bookmarks" — accept exported HTML
+  bookmark file, parse <DT><A HREF=...> entries, bulk-add. Out of scope now.

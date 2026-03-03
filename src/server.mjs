@@ -2,6 +2,7 @@ import { createServer } from 'http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
+import * as links from './links.mjs';
 import { PDFParse } from 'pdf-parse';
 import config from './config.mjs';
 import { ingestText, deleteSource } from './ingest.mjs';
@@ -390,6 +391,71 @@ async function handle(req, res) {
     const { theme } = await readBody(req);
     if (!theme) { send(res, 400, { error: 'theme required' }); return; }
     writeFileSync(UI_SETTINGS, JSON.stringify({ theme }, null, 2), 'utf8');
+    send(res, 200, { ok: true });
+    return;
+  }
+
+  // --- Links ---
+
+  if (req.method === 'GET' && url.pathname === '/links/fetch-title') {
+    const targetUrl = url.searchParams.get('url');
+    if (!targetUrl) { send(res, 400, { error: 'url required' }); return; }
+    try {
+      if (typeof fetch === 'undefined') { send(res, 200, { title: '' }); return; }
+      const ac    = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 5000);
+      try {
+        const r   = await fetch(targetUrl, {
+          signal:  ac.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Pythia/1.0)' },
+        });
+        const raw     = await r.text();
+        const snippet = raw.slice(0, 16384);
+        const m       = snippet.match(/<title[^>]*>([^<]+)<\/title>/i);
+        let title     = m ? m[1] : '';
+        title = title
+          .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+        send(res, 200, { title });
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch { send(res, 200, { title: '' }); }
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/links') {
+    send(res, 200, { links: links.loadLinks() });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/links') {
+    const { url: linkUrl, title, tags, note } = await readBody(req);
+    if (!linkUrl) { send(res, 400, { error: 'url required' }); return; }
+    const link = links.addLink({ url: linkUrl, title: title || '', tags: tags || [], note: note || '' });
+    send(res, 201, { link });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname.startsWith('/links/') && url.pathname.endsWith('/visit')) {
+    const id = url.pathname.slice(7, -6);
+    links.bumpVisit(id);
+    send(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === 'PATCH' && url.pathname.startsWith('/links/')) {
+    const id   = url.pathname.slice(7);
+    const patch = await readBody(req);
+    const link  = links.updateLink(id, patch);
+    if (!link) { send(res, 404, { error: 'not found' }); return; }
+    send(res, 200, { link });
+    return;
+  }
+
+  if (req.method === 'DELETE' && url.pathname.startsWith('/links/')) {
+    const id = url.pathname.slice(7);
+    links.deleteLink(id);
     send(res, 200, { ok: true });
     return;
   }

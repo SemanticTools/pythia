@@ -461,6 +461,12 @@ document.getElementById('help-overlay').addEventListener('click', (e) => {
 // ── Keyboard shortcuts ─────────────────────────────────────────────────
 
 document.addEventListener('keydown', (e) => {
+  // Link mode intercepts everything
+  if (_linkMode) {
+    handleLinkModeKey(e);
+    return;
+  }
+
   // ? → help (only when not in an input)
   if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
     const tag = document.activeElement?.tagName;
@@ -487,6 +493,11 @@ document.addEventListener('keydown', (e) => {
       history = [];
       document.getElementById('chat').innerHTML = '';
       document.getElementById('ask-error').hidden = true;
+      break;
+    case 'l':
+    case 'L':
+      e.preventDefault();
+      toggleLinkMode();
       break;
     case 'm':
     case 'M': {
@@ -676,8 +687,660 @@ document.getElementById('disc-new-btn').addEventListener('click', () => {
   closeDiscussionsPanel();
 });
 
+// ── Link Mode ──────────────────────────────────────────────────────────
+
+let _linkMode      = false;
+let _links         = [];
+let _filtered      = [];
+let _linkSel       = 0;
+let _linkForm      = null;   // null | 'add' | 'edit' | 'delete' | 'tag' | 'cmdlist'
+let _linkFormLink  = null;
+let _cmdTarget     = null;   // link captured when '.' is pressed, used by commands
+let _openedTabs    = [];     // window refs from opened links, for .k close command
+let _tagDraft      = [];
+let _tagDropSel    = -1;
+
+// ── Helpers ──
+
+function isUrl(str) {
+  return /^https?:\/\/\S+$/.test(str);
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function parseTags(str) {
+  return str.split(/[\s,]+/).map(t => t.trim().toLowerCase()).filter(Boolean);
+}
+
+function allTags() {
+  const set = new Set();
+  for (const l of _links) (l.tags || []).forEach(t => set.add(t));
+  return [...set].sort();
+}
+
+function tagSuggestions(partial) {
+  const q = partial.toLowerCase();
+  return allTags().filter(t => t.startsWith(q) && !_tagDraft.includes(t)).slice(0, 6);
+}
+
+// ── Scoring / filtering ──
+
+function scoreLink(link, q) {
+  let score = 0;
+  const title = (link.title || link.url).toLowerCase();
+  const urlL  = link.url.toLowerCase();
+  const note  = (link.note || '').toLowerCase();
+  const tags  = link.tags || [];
+  if (tags.some(t => t === q))           score += 50;
+  if (tags.some(t => t.startsWith(q)))   score += 40;
+  if (tags.some(t => t.includes(q)))     score += 30;
+  if (title.startsWith(q))               score += 25;
+  if (title.includes(q))                 score += 15;
+  if (urlL.includes(q))                  score += 15;
+  if (note.includes(q))                  score +=  5;
+  if (score > 0) score += Math.min(link.visits || 0, 10);  // visits only as tiebreaker
+  return score;
+}
+
+function filterLinks(query) {
+  const q = (query || '').trim();
+  if (q.startsWith('#')) {
+    const tagQ = q.slice(1).toLowerCase();
+    _filtered = _links.filter(l => {
+      if (!tagQ) return (l.tags || []).length > 0;
+      return (l.tags || []).some(t => t.startsWith(tagQ) || t.includes(tagQ));
+    });
+  } else if (!q) {
+    _filtered = [..._links].sort((a, b) => (b.visits || 0) - (a.visits || 0));
+  } else {
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    _filtered = _links
+      .map(l => {
+        const scores = words.map(w => scoreLink(l, w));
+        if (scores.some(s => s === 0)) return null;
+        return { l, s: scores.reduce((a, b) => a + b, 0) };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.s - a.s)
+      .map(x => x.l);
+  }
+  _linkSel = 0;
+  renderLinkList();
+}
+
+// ── Render ──
+
+function renderLinkList() {
+  const ul = document.getElementById('link-list');
+  ul.innerHTML = '';
+  for (let i = 0; i < _filtered.length; i++) {
+    const l  = _filtered[i];
+    const li = document.createElement('li');
+    li.className = 'link-row' + (i === _linkSel ? ' selected' : '');
+
+    const title = document.createElement('span');
+    title.className = 'link-title';
+    title.textContent = l.title || l.url;
+
+    const urlEl = document.createElement('span');
+    urlEl.className = 'link-url';
+    try { urlEl.textContent = new URL(l.url).hostname; } catch { urlEl.textContent = l.url; }
+
+    li.appendChild(title);
+    li.appendChild(urlEl);
+
+    if ((l.tags || []).length) {
+      const wrap = document.createElement('span');
+      wrap.className = 'link-tags';
+      for (const t of l.tags) {
+        const chip = document.createElement('span');
+        chip.className = 'link-tag';
+        chip.textContent = t;
+        wrap.appendChild(chip);
+      }
+      li.appendChild(wrap);
+    }
+
+    li.addEventListener('click', () => { _linkSel = i; openSelectedLink(); });
+    ul.appendChild(li);
+  }
+
+  const sel = ul.querySelector('.selected');
+  if (sel) sel.scrollIntoView({ block: 'nearest' });
+
+  const count = document.getElementById('link-count');
+  if (count) count.textContent = _filtered.length
+    ? `${_filtered.length} link${_filtered.length === 1 ? '' : 's'}`
+    : 'no links';
+}
+
+function selectLink(delta) {
+  _linkSel = Math.max(0, Math.min(_filtered.length - 1, _linkSel + delta));
+  renderLinkList();
+}
+
+// ── Open / close ──
+
+async function openLinkMode() {
+  if (_linkMode) return;
+  _linkMode = true;
+  if (!_links.length) {
+    try {
+      const res = await fetch('/links');
+      const data = await res.json();
+      _links = data.links || [];
+    } catch { _links = []; }
+  }
+  document.getElementById('link-mode-overlay').hidden = false;
+  clearLinkStatus();
+  document.getElementById('link-search').value = '';
+  filterLinks('');
+  document.getElementById('link-search').focus();
+}
+
+function closeLinkMode() {
+  if (!_linkMode) return;
+  _linkMode = false;
+  _linkForm = null;
+  _linkFormLink = null;
+  document.getElementById('link-mode-overlay').hidden = true;
+}
+
+function toggleLinkMode() {
+  if (_linkMode) closeLinkMode(); else openLinkMode();
+}
+
+async function openSelectedLink() {
+  const link = _filtered[_linkSel];
+  if (!link) return;
+  fetch(`/links/${link.id}/visit`, { method: 'POST' }).catch(() => {});
+  link.visits = (link.visits || 0) + 1;
+  const tab = window.open(link.url, '_blank');
+  if (tab) _openedTabs.push(tab);
+  closeLinkMode();
+}
+
+// ── Status area ──
+
+function clearLinkStatus() {
+  const el = document.getElementById('link-status');
+  el.innerHTML = '';
+  el.hidden = true;
+  _linkForm = null;
+  _linkFormLink = null;
+}
+
+function showLinkStatus(html) {
+  const el = document.getElementById('link-status');
+  el.innerHTML = html;
+  el.hidden = false;
+}
+
+// ── Add form ──
+
+async function showAddForm(prefillUrl = '') {
+  _linkForm = 'add';
+  showLinkStatus(`
+    <div class="lf-row">
+      <input id="lf-url"   class="lf-input" type="text" placeholder="URL"   value="${escHtml(prefillUrl)}" autocomplete="off">
+      <input id="lf-title" class="lf-input" type="text" placeholder="Title (auto-fetched)" autocomplete="off">
+    </div>
+    <div class="lf-row">
+      <input id="lf-tags" class="lf-input" type="text" placeholder="Tags (space or comma)" autocomplete="off">
+      <span class="lf-hint">Enter to save  Esc to cancel</span>
+    </div>`);
+
+  const urlEl   = document.getElementById('lf-url');
+  const titleEl = document.getElementById('lf-title');
+  const tagsEl  = document.getElementById('lf-tags');
+
+  [urlEl, titleEl, tagsEl].forEach(inp => inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter')  { e.preventDefault(); e.stopPropagation(); submitAddForm(); }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); clearLinkStatus(); document.getElementById('link-search').focus(); }
+  }));
+
+  if (prefillUrl) {
+    titleEl.placeholder = 'Fetching title…';
+    titleEl.focus();
+    try {
+      const r = await fetch(`/links/fetch-title?url=${encodeURIComponent(prefillUrl)}`);
+      const d = await r.json();
+      titleEl.value = d.title || '';
+    } catch { /* ignore */ }
+    titleEl.placeholder = 'Title';
+    titleEl.focus();
+    titleEl.select();
+  } else {
+    urlEl.focus();
+    urlEl.addEventListener('blur', async () => {
+      const u = urlEl.value.trim();
+      if (!u || titleEl.value.trim() || !isUrl(u)) return;
+      titleEl.placeholder = 'Fetching title…';
+      try {
+        const r = await fetch(`/links/fetch-title?url=${encodeURIComponent(u)}`);
+        const d = await r.json();
+        titleEl.value = d.title || '';
+      } catch { /* ignore */ }
+      titleEl.placeholder = 'Title';
+    });
+  }
+}
+
+async function submitAddForm() {
+  const url   = document.getElementById('lf-url')?.value.trim();
+  const title = document.getElementById('lf-title')?.value.trim() || '';
+  const tags  = parseTags(document.getElementById('lf-tags')?.value || '');
+  if (!url) return;
+  try {
+    const res  = await fetch('/links', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, title, tags }),
+    });
+    const data = await res.json();
+    if (data.link && !_links.some(l => l.id === data.link.id)) _links.unshift(data.link);
+    clearLinkStatus();
+    filterLinks(document.getElementById('link-search').value);
+    document.getElementById('link-search').focus();
+  } catch { /* ignore */ }
+}
+
+// ── Edit form ──
+
+function showEditForm(link) {
+  if (!link) return;
+  _linkForm = 'edit';
+  _linkFormLink = link;
+  showLinkStatus(`
+    <div class="lf-row">
+      <input id="lf-title" class="lf-input" type="text" placeholder="Title" value="${escHtml(link.title || '')}" autocomplete="off">
+      <input id="lf-url"   class="lf-input" type="text" placeholder="URL"   value="${escHtml(link.url)}"   autocomplete="off">
+    </div>
+    <div class="lf-row">
+      <input id="lf-tags" class="lf-input" type="text" placeholder="Tags" value="${escHtml((link.tags || []).join(', '))}" autocomplete="off">
+      <input id="lf-note" class="lf-input" type="text" placeholder="Note" value="${escHtml(link.note || '')}" autocomplete="off">
+      <span class="lf-hint">Enter to save  Esc to cancel</span>
+    </div>`);
+
+  ['lf-title', 'lf-url', 'lf-tags', 'lf-note'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter')  { e.preventDefault(); e.stopPropagation(); submitEditForm(); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); clearLinkStatus(); document.getElementById('link-search').focus(); }
+    });
+  });
+  document.getElementById('lf-title').focus();
+  document.getElementById('lf-title').select();
+}
+
+async function submitEditForm() {
+  const link  = _linkFormLink;
+  if (!link) return;
+  const title = document.getElementById('lf-title')?.value.trim() || '';
+  const url   = document.getElementById('lf-url')?.value.trim() || link.url;
+  const tags  = parseTags(document.getElementById('lf-tags')?.value || '');
+  const note  = document.getElementById('lf-note')?.value.trim() || '';
+  try {
+    const res  = await fetch(`/links/${link.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, url, tags, note }),
+    });
+    const data = await res.json();
+    const idx  = _links.findIndex(l => l.id === link.id);
+    if (idx >= 0 && data.link) _links[idx] = data.link;
+    clearLinkStatus();
+    filterLinks(document.getElementById('link-search').value);
+    document.getElementById('link-search').focus();
+  } catch { /* ignore */ }
+}
+
+// ── Delete confirm ──
+
+function confirmDelete(link) {
+  link = link || _filtered[_linkSel];
+  if (!link) return;
+  _linkForm = 'delete';
+  _linkFormLink = link;
+  const label = (link.title || link.url).slice(0, 60);
+  showLinkStatus(`<div class="lf-row"><span class="lf-confirm">Delete "${escHtml(label)}"?</span><span class="lf-hint">[y] yes  [n] no</span></div>`);
+}
+
+async function executeDelete() {
+  const link = _linkFormLink;
+  if (!link) return;
+  try {
+    await fetch(`/links/${link.id}`, { method: 'DELETE' });
+    _links = _links.filter(l => l.id !== link.id);
+    clearLinkStatus();
+    filterLinks(document.getElementById('link-search').value);
+    document.getElementById('link-search').focus();
+  } catch { clearLinkStatus(); }
+}
+
+// ── Tag editor ──
+
+function openTagEditor(link) {
+  if (!link) return;
+  _linkForm = 'tag';
+  _linkFormLink = link;
+  _tagDraft = [...(link.tags || [])];
+  _tagDropSel = -1;
+  renderTagEditor();
+}
+
+function renderTagEditor() {
+  const chips = _tagDraft.map(t =>
+    `<span class="tag-chip">${escHtml(t)}<button class="tag-chip-x" data-tag="${escHtml(t)}" tabindex="-1">×</button></span>`
+  ).join('');
+  showLinkStatus(`
+    <div class="tag-editor">
+      <div class="tag-chip-area">${chips}</div>
+      <div class="tag-input-wrap">
+        <input id="tag-inp" class="lf-input" type="text" placeholder="add tag…" autocomplete="off">
+        <ul id="tag-autocomplete" hidden></ul>
+      </div>
+      <span class="lf-hint">Space/comma/Enter to add  Backspace to remove last  Esc to save &amp; close</span>
+    </div>`);
+
+  document.querySelectorAll('.tag-chip-x').forEach(btn =>
+    btn.addEventListener('click', () => removeTagChip(btn.dataset.tag))
+  );
+
+  const inp = document.getElementById('tag-inp');
+  inp.addEventListener('input',   () => renderTagSuggestions(inp.value));
+  inp.addEventListener('keydown', tagEditorKeydown);
+  inp.focus();
+}
+
+function tagEditorKeydown(e) {
+  const inp  = document.getElementById('tag-inp');
+  const drop = document.getElementById('tag-autocomplete');
+  const dropOpen = drop && !drop.hidden;
+
+  if (e.key === ' ' || e.key === ',') {
+    e.preventDefault(); e.stopPropagation();
+    const v = inp.value.trim();
+    if (v) commitTag(v);
+    return;
+  }
+  if (e.key === 'Backspace' && !inp.value) {
+    e.preventDefault(); e.stopPropagation();
+    if (_tagDraft.length) removeTagChip(_tagDraft[_tagDraft.length - 1]);
+    return;
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault(); e.stopPropagation();
+    if (dropOpen && _tagDropSel >= 0) {
+      const items = drop.querySelectorAll('li');
+      if (items[_tagDropSel]) { commitTag(items[_tagDropSel].textContent); return; }
+    }
+    const v = inp.value.trim();
+    if (v) { commitTag(v); return; }
+    closeTagEditor(true);
+    return;
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault(); e.stopPropagation();
+    if (dropOpen) {
+      _tagDropSel = Math.min(_tagDropSel + 1, drop.querySelectorAll('li').length - 1);
+      renderTagDropHighlight();
+    }
+    return;
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault(); e.stopPropagation();
+    if (dropOpen) { _tagDropSel = Math.max(_tagDropSel - 1, -1); renderTagDropHighlight(); }
+    return;
+  }
+  if (e.key === 'Tab') {
+    e.preventDefault(); e.stopPropagation();
+    if (dropOpen) {
+      _tagDropSel = Math.min(_tagDropSel + 1, drop.querySelectorAll('li').length - 1);
+      renderTagDropHighlight();
+    }
+    return;
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault(); e.stopPropagation();
+    if (dropOpen) { drop.hidden = true; _tagDropSel = -1; return; }
+    closeTagEditor(true);
+    return;
+  }
+}
+
+function renderTagDropHighlight() {
+  document.getElementById('tag-autocomplete')
+    ?.querySelectorAll('li')
+    .forEach((li, i) => li.classList.toggle('selected', i === _tagDropSel));
+}
+
+function renderTagSuggestions(partial) {
+  const drop = document.getElementById('tag-autocomplete');
+  if (!drop) return;
+  const sugs = partial.trim() ? tagSuggestions(partial.trim()) : [];
+  if (!sugs.length) { drop.hidden = true; drop.innerHTML = ''; _tagDropSel = -1; return; }
+  drop.innerHTML = '';
+  _tagDropSel = -1;
+  for (const s of sugs) {
+    const li = document.createElement('li');
+    li.textContent = s;
+    li.addEventListener('mousedown', (e) => { e.preventDefault(); commitTag(s); });
+    drop.appendChild(li);
+  }
+  drop.hidden = false;
+}
+
+function commitTag(tag) {
+  const t = tag.trim().toLowerCase();
+  if (!t || _tagDraft.includes(t)) return;
+  _tagDraft.push(t);
+  renderTagEditor();
+}
+
+function removeTagChip(tag) {
+  _tagDraft = _tagDraft.filter(t => t !== tag);
+  renderTagEditor();
+}
+
+async function closeTagEditor(save) {
+  const link = _linkFormLink;
+  clearLinkStatus();
+  if (save && link) {
+    try {
+      const res  = await fetch(`/links/${link.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags: _tagDraft }),
+      });
+      const data = await res.json();
+      const idx  = _links.findIndex(l => l.id === link.id);
+      if (idx >= 0 && data.link) _links[idx] = data.link;
+    } catch { /* ignore */ }
+  }
+  filterLinks(document.getElementById('link-search').value || '');
+  document.getElementById('link-search').focus();
+}
+
+// ── Link mode keydown handler ──
+
+function handleLinkModeKey(e) {
+  const search   = document.getElementById('link-search');
+  const statusEl = document.getElementById('link-status');
+  const inStatus = statusEl && !statusEl.hidden && statusEl.contains(document.activeElement);
+  const inSearch = document.activeElement === search;
+
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    if (_linkForm) { clearLinkStatus(); search.value = ''; filterLinks(''); _cmdTarget = null; search.focus(); }
+    else closeLinkMode();
+    return;
+  }
+
+  if (_linkForm === 'delete') {
+    if (e.key === 'y' || e.key === 'Y' || e.key === 'Enter') { e.preventDefault(); executeDelete(); return; }
+    if (e.key === 'n' || e.key === 'N') { e.preventDefault(); clearLinkStatus(); search.focus(); return; }
+    return;
+  }
+
+  // Form inputs handle their own keys via stopPropagation
+  if (inStatus) return;
+
+  // Navigation — handled here for all focus positions; form inputs use stopPropagation for their own Enter/Esc
+  if (e.key === 'ArrowDown') { e.preventDefault(); selectLink(1);  return; }
+  if (e.key === 'ArrowUp')   { e.preventDefault(); selectLink(-1); return; }
+  if (e.key === 'Enter')     { e.preventDefault(); openSelectedLink(); return; }
+}
+
+// ── Command dispatch (.prefix) ──
+
+const CMD_LIST_HTML = `
+  <div class="cmd-list">
+    <span class="cmd-item"><kbd>.a</kbd> add</span>
+    <span class="cmd-item"><kbd>.e</kbd> edit</span>
+    <span class="cmd-item"><kbd>.t</kbd> tag</span>
+    <span class="cmd-item"><kbd>.d</kbd> delete</span>
+    <span class="cmd-item"><kbd>.c</kbd> copy url</span>
+    <span class="cmd-item"><kbd>.k</kbd> kill tabs</span>
+  </div>`;
+
+function handleCmdInput(val) {
+  if (_linkForm && _linkForm !== 'cmdlist') return;
+  const search = document.getElementById('link-search');
+
+  const run = (fn) => {
+    search.value = '';
+    search.classList.remove('cmd-mode');
+    clearLinkStatus();
+    fn();
+    _cmdTarget = null;
+  };
+
+  switch (val) {
+    case '.a':
+      run(() => navigator.clipboard.readText()
+        .then(t => showAddForm(isUrl(t.trim()) ? t.trim() : ''))
+        .catch(() => showAddForm('')));
+      break;
+    case '.e':
+      run(() => showEditForm(_cmdTarget));
+      break;
+    case '.t':
+      run(() => openTagEditor(_cmdTarget));
+      break;
+    case '.d':
+      run(() => confirmDelete(_cmdTarget));
+      break;
+    case '.c':
+      run(() => {
+        if (_cmdTarget) navigator.clipboard.writeText(_cmdTarget.url).catch(() => {});
+      });
+      break;
+    case '.k':
+      run(() => {
+        _openedTabs.forEach(w => { try { if (!w.closed) w.close(); } catch { } });
+        _openedTabs = [];
+      });
+      break;
+    default:
+      // Partial command or just '.' — show list
+      _linkForm = 'cmdlist';
+      showLinkStatus(CMD_LIST_HTML);
+      break;
+  }
+}
+
+// ── Link search input ──
+
+document.getElementById('link-search').addEventListener('input', (e) => {
+  const val = e.target.value;
+  if (val.startsWith('.')) {
+    e.target.classList.add('cmd-mode');
+    e.target.classList.remove('tag-mode');
+    handleCmdInput(val);
+  } else {
+    e.target.classList.remove('cmd-mode');
+    if (_linkForm === 'cmdlist') clearLinkStatus();
+    filterLinks(val);
+    e.target.classList.toggle('tag-mode', val.startsWith('#'));
+  }
+});
+
+document.getElementById('link-search').addEventListener('keydown', (e) => {
+  if (!_linkMode) return;
+
+  // Intercept '.' to enter command mode, capturing the currently selected link
+  if (e.key === '.' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    _cmdTarget = _filtered[_linkSel] || null;
+    const s = e.target;
+    s.value = '.';
+    s.classList.add('cmd-mode');
+    s.classList.remove('tag-mode');
+    _linkForm = 'cmdlist';
+    showLinkStatus(CMD_LIST_HTML);
+    return;
+  }
+
+  if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+    setTimeout(() => {
+      const val = document.getElementById('link-search').value.trim();
+      if (isUrl(val)) {
+        document.getElementById('link-search').value = '';
+        filterLinks('');
+        showAddForm(val);
+      }
+    }, 0);
+  }
+});
+
+// ── Ask-textarea silent auto-save ──
+
+document.getElementById('question').addEventListener('paste', (e) => {
+  const pasted = (e.clipboardData || window.clipboardData).getData('text').trim();
+  if (!isUrl(pasted)) return;
+  e.preventDefault();
+  document.getElementById('question').value = '';
+  openLinkMode();
+  if (_links.some(l => l.url === pasted)) return;
+  const savedMsg = appendMsg('ai', 'Link saved.');
+  fetch('/links', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: pasted }),
+  }).then(r => r.json()).then(data => {
+    if (!data.link) return;
+    if (!_links.some(l => l.id === data.link.id)) {
+      _links.unshift(data.link);
+      if (_linkMode) filterLinks(document.getElementById('link-search').value);
+    }
+    // Backfill title and update the message
+    fetch(`/links/fetch-title?url=${encodeURIComponent(pasted)}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.title) {
+          savedMsg.querySelector('.msg-body').textContent = `Link saved: ${d.title}`;
+        }
+        if (!d.title) return;
+        fetch(`/links/${data.link.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: d.title }),
+        }).then(r2 => r2.json()).then(d2 => {
+          if (!d2.link) return;
+          const idx = _links.findIndex(l => l.id === d2.link.id);
+          if (idx >= 0) _links[idx] = d2.link;
+        }).catch(() => {});
+      }).catch(() => {});
+  }).catch(() => {});
+});
+
 // ── Init ───────────────────────────────────────────────────────────────
 
 document.getElementById('theme-btn').addEventListener('click', cycleTheme);
+
+document.getElementById('link-mode-overlay').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('link-mode-overlay')) closeLinkMode();
+});
 
 loadTheme();

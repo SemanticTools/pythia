@@ -119,6 +119,7 @@
         <tr><td>Ctrl+1</td><td>Discussion tab</td></tr>
         <tr><td>Ctrl+2</td><td>Buckets tab</td></tr>
         <tr><td>Ctrl+K</td><td>Clear chat</td></tr>
+        <tr><td>Ctrl+L</td><td>Link mode</td></tr>
         <tr><td>Ctrl+M</td><td>Toggle Quick Memory</td></tr>
         <tr><td>Ctrl+T</td><td>Cycle theme</td></tr>
         <tr><td>Enter</td><td>Submit question</td></tr>
@@ -126,6 +127,20 @@
         <tr><td>?</td><td>This help</td></tr>
       </table>
       <button id="help-close-btn">Close</button>
+    </div>
+  </div>
+
+  <!-- Link Mode overlay -->
+  <div id="link-mode-overlay" hidden>
+    <div id="link-mode-panel">
+      <div id="link-mode-header">
+        <span id="link-mode-label">LINKS</span>
+        <span id="link-mode-hints">[↑↓] navigate  [Enter] open  [.] commands  [Esc] exit</span>
+      </div>
+      <input id="link-search" type="text" placeholder="search or #tag…" autocomplete="off" spellcheck="false">
+      <div id="link-status" hidden></div>
+      <ul id="link-list"></ul>
+      <div id="link-footer"><span id="link-count"></span></div>
     </div>
   </div>
 
