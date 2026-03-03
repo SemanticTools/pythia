@@ -78,6 +78,14 @@ From the pythia project root:
 This installs all packages including @xenova/transformers (the
 local embedding model runner) and pdf-parse.
 
+NOTE — pdf-parse version:
+  package.json pins pdf-parse to exactly 1.1.1. Do not upgrade
+  it. pdf-parse 2.x pulls in pdfjs-dist 5.x which requires a
+  DOMMatrix/canvas API not available in plain Node.js. On Windows
+  (and Linux without the @napi-rs/canvas native binary) this
+  causes a crash at startup. Version 1.1.1 uses pdfjs-dist 2.x
+  and works in Node.js without any native dependencies.
+
 
 --------------------------------------------------------------
 STEP 4 — Configure the LLM provider

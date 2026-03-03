@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlink
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import * as links from './links.mjs';
-import { PDFParse } from 'pdf-parse';
+import pdfParse from 'pdf-parse';
 import config from './config.mjs';
 import { ingestText, deleteSource } from './ingest.mjs';
 import { syncDocsource } from './sync.mjs';
@@ -340,10 +340,8 @@ async function handle(req, res) {
     if (lname.endsWith('.pdf')) {
       let text;
       try {
-        const parser = new PDFParse({ data: buf });
-        const result = await parser.getText();
+        const result = await pdfParse(buf);
         text = result.text;
-        await parser.destroy();
       } catch (err) {
         send(res, 400, { error: `PDF parse failed: ${err.message}` });
         return;
