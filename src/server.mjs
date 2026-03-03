@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlink
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import * as links from './links.mjs';
-import pdfParse from 'pdf-parse';
+import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import config from './config.mjs';
 import { ingestText, deleteSource } from './ingest.mjs';
 import { syncDocsource } from './sync.mjs';

@@ -86,6 +86,13 @@ NOTE — pdf-parse version:
   causes a crash at startup. Version 1.1.1 uses pdfjs-dist 2.x
   and works in Node.js without any native dependencies.
 
+  Additionally, pdf-parse 1.1.1 has a bug where its main entry
+  point runs a self-test on import, looking for a file at
+  test/data/05-versions-space.pdf and crashing if not found.
+  Pythia works around this by importing from the internal library
+  path directly: pdf-parse/lib/pdf-parse.js. This is already
+  done in the code — do not change the import back to 'pdf-parse'.
+
 
 --------------------------------------------------------------
 STEP 4 — Configure the LLM provider
