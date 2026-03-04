@@ -1,7 +1,8 @@
 import { readdirSync, readFileSync, statSync, existsSync, writeFileSync } from 'fs';
 import { join, relative, extname, sep } from 'path';
 import config from './config.mjs';
-import { ingestText } from './ingest.mjs';
+import { ingestText, deleteSource } from './ingest.mjs';
+import { deleteBySourceAndSnippet } from './vectors.mjs';
 import { logger } from './lib/log.mjs';
 
 const log = logger('ingest');
@@ -87,6 +88,24 @@ export async function syncDocsource() {
     ingested.push(relPath);
   }
 
-  log.info(`Sync complete — ingested: [${ingested.join(', ') || 'none'}]  skipped: [${skipped.join(', ') || 'none'}]`);
-  return { ingested, skipped };
+  // Remove vectors for files that no longer exist on disk
+  const currentFiles = new Set(files.map(f => f.relPath));
+  const removed = [];
+  for (const relPath of Object.keys(index)) {
+    if (!currentFiles.has(relPath)) {
+      const { source, snippetName } = parsePath(relPath);
+      if (snippetName) {
+        await deleteBySourceAndSnippet(source, snippetName);
+      } else {
+        await deleteSource(source);
+      }
+      delete index[relPath];
+      saveIndex(index);
+      removed.push(relPath);
+      log.info(`Uningested deleted file "${relPath}"`);
+    }
+  }
+
+  log.info(`Sync complete — ingested: [${ingested.join(', ') || 'none'}]  skipped: [${skipped.join(', ') || 'none'}]  removed: [${removed.join(', ') || 'none'}]`);
+  return { ingested, skipped, removed };
 }

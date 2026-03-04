@@ -1301,6 +1301,8 @@ document.getElementById('link-search').addEventListener('keydown', (e) => {
 document.getElementById('question').addEventListener('paste', (e) => {
   const pasted = (e.clipboardData || window.clipboardData).getData('text').trim();
   if (!isUrl(pasted)) return;
+  const ta = document.getElementById('question');
+  if (ta.value.length > 0) return;  // text already present — paste normally
   e.preventDefault();
   document.getElementById('question').value = '';
   openLinkMode();
