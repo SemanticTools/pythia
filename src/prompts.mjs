@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import TOML from '@iarna/toml';
 
-const raw = readFileSync(new URL('../prompting.toml', import.meta.url), 'utf8');
+const raw = readFileSync(new URL('../prompting.toml', import.meta.url), 'utf8').replace(/\r/g, '');
 const prompts = TOML.parse(raw);
 
 // Lookup order for a given mode (e.g. "hybrid"):
