@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PID_FILE="$SCRIPT_DIR/pythia.pid"
+ROOT_DIR="$(cd $SCRIPT_DIR/.. && pwd)"
+echo "Root directory: $ROOT_DIR"
+
+PID_FILE="$ROOT_DIR/pythia.pid"
 
 if [ ! -f "$PID_FILE" ]; then
   echo "Pythia is not running (no PID file found)"

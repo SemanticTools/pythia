@@ -2,8 +2,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PID_FILE="$SCRIPT_DIR/pythia.pid"
-LOG_FILE="$SCRIPT_DIR/log/pythia.log"
+ROOT_DIR="$(cd $SCRIPT_DIR/.. && pwd)"
+echo "Root directory: $ROOT_DIR"
+PID_FILE="$ROOT_DIR/pythia.pid"
+LOG_FILE="$ROOT_DIR/log/pythia.log"
 
 if [ -f "$PID_FILE" ]; then
   PID=$(cat "$PID_FILE")
@@ -15,10 +17,10 @@ if [ -f "$PID_FILE" ]; then
   fi
 fi
 
-mkdir -p "$SCRIPT_DIR/log"
+mkdir -p "$ROOT_DIR/log"
 
 echo "Starting Pythia..."
-nohup node "$SCRIPT_DIR/src/main.mjs" >> "$LOG_FILE" 2>&1 &
+nohup node "$ROOT_DIR/src/main.mjs" >> "$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
 echo "Pythia started (PID $(cat "$PID_FILE"))"
 echo "Logs: $LOG_FILE"
